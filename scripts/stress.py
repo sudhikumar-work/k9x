@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""k9x vs k9s STRESS test — LOCAL DUMMY CLUSTER ONLY (kind-k10s-test).
+"""k9x vs k9s STRESS test — LOCAL DUMMY CLUSTER ONLY (kind-k9x-test).
 
 Hard isolation:
   * builds a THROWAWAY kubeconfig containing ONLY the kind context —
@@ -33,7 +33,7 @@ import fcntl
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 K9X = os.path.join(REPO, "target", "release", "k9x")
 K9S = "/opt/homebrew/bin/k9s"
-CTX = "kind-k10s-test"
+CTX = "kind-k9x-test"
 DEPLOYS = ["stress-a", "stress-b", "stress-c"]
 REPLICAS = 30   # 3 × 30 = 90 pods: node allocatable caps at 110; colima VM is 2CPU/2GiB
 SOAK_SECS = 40

@@ -6,7 +6,7 @@ import pyte
 
 K9S = "/opt/homebrew/bin/k9s"
 K9X = "/Users/sudheeshkumar.surendran/Simply Jet/Repos/k9x/target/release/k9x"
-CTX = "kind-k10s-test"
+CTX = "kind-k9x-test"
 NS = "demo"
 
 def run_tool(binpath, args, keys_at, total=13.0, cols=170, rows=45):
@@ -132,7 +132,7 @@ record("S11 logs-open", ("logs" in t9.lower()), ("logs demo/" in t1 or "[follow]
 # ---------- S12 ctx ----------
 t9, _, _ = run_tool(K9S, ["--context", CTX, "-n", NS], [(7.0, [b":"]), (7.7, [b"c", b"t", b"x"]), (8.9, [b"\r"])], total=12)
 t1, _, _ = run_tool(K9X, ["po", "-n", NS], [(7.0, [b":", b"c", b"t", b"x"]), (8.9, [b"\r"])], total=12)
-record("S12 contexts-list", ("kind-k10s-test" in t9), ("kind-k10s-test" in t1))
+record("S12 contexts-list", ("kind-k9x-test" in t9), ("kind-k9x-test" in t1))
 
 # ---------- S13 helm ----------
 t9h, _, _ = run_tool(K9S, ["--context", CTX, "-n", NS], [(7.0, [b":"]), (7.7, [b"h", b"e", b"l", b"m"]), (9.2, [b"\r"])], total=13)

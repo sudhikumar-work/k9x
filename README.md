@@ -15,9 +15,10 @@
 | Metric / Feature | k9s | **k9x** | Advantage |
 |---|---|---|---|
 | **Refresh Architecture** | Timer polling (2s re-list + full re-render) | **Watch streams → render only on delta** | Zero idle API churn |
-| **Startup Latency** | Blocks on informer `WaitForCacheSync` | **First frame in < 1ms**, rows stream in | Instant launch |
-| **Process Exec (CLI p50)** | ~48.2ms | **5.5ms** | ~8.8x faster |
-| **Binary Footprint** | ~140MB | **~8.6MB** (LTO + Strip) | 16x smaller |
+| **Startup Latency** | Blocks on informer `WaitForCacheSync` | **First frame in < 1ms**, rows stream in | Instant launch (<60ms TTFD) |
+| **Process Exec (CLI p50)** | ~48.1ms | **5.4ms** | ~8.9x faster |
+| **Binary Footprint** | ~133.9MB | **~7.3MB** (LTO + Strip) | ~18x smaller |
+| **Idle Memory (RSS)** | ~88.0MB | **~11.4MB** | ~7.7x less RAM |
 | **Agent / Headless Mode** | TUI only | **Native CLI**: `ls/get/logs/watch` with `-o json/yaml/name` | AI Agent & Script Ready |
 
 ---

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""k9x vs k9s benchmark — LOCAL DUMMY CLUSTER ONLY (kind-k10s-test).
+"""k9x vs k9s benchmark — LOCAL DUMMY CLUSTER ONLY (kind-k9x-test).
 
 Safety: every invocation passes an explicit context flag and the script
 aborts unless the target API server resolves to 127.0.0.1/localhost.
@@ -25,7 +25,7 @@ import fcntl
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 K9X = os.path.join(REPO, "target", "release", "k9x")
 K9S = "/opt/homebrew/bin/k9s"
-CTX = "kind-k10s-test"
+CTX = "kind-k9x-test"
 NS = "demo"
 
 RUNS_EXEC = 30

@@ -5,8 +5,8 @@ import pty, os, time, select, fcntl, termios, struct, re, glob, subprocess, sys
 import pyte
 
 BIN = os.environ.get("K9X_BIN") or (os.path.expanduser("~/.local/bin/k9x") if os.path.exists(os.path.expanduser("~/.local/bin/k9x")) else os.path.abspath("target/release/k9x"))
-CTX = ["-x", "kind-k10s-test"]
-KUBECTL_CTX = "kind-k10s-test"
+CTX = ["-x", "kind-k9x-test"]
+KUBECTL_CTX = "kind-k9x-test"
 
 def kubectl(*a):
     return subprocess.run(["kubectl", "--context", KUBECTL_CTX, *a], capture_output=True).stdout
@@ -279,7 +279,7 @@ check("27 alias-zz-po-view", lambda: ((lambda t: (b"unknowncommand" not in t and
 
 check("28 readonly-blocks-delete", lambda: ((lambda t: (b"read-onlymode:mutationblocked" in t, ""))(drive(["-r", "po", "-n", "demo"], [(WARM, [b"\x04"])]))))
 
-check("29 ctx-menu-lists-kind", lambda: ((lambda t: (b"contexts" in t.lower() and b"kind-k10s-test" in t, ""))(drive(["po", "-n", "demo"], [(WARM, seq(":ctx")), (WARM + 1.2, [b"\r"])]))))
+check("29 ctx-menu-lists-kind", lambda: ((lambda t: (b"contexts" in t.lower() and b"kind-k9x-test" in t, ""))(drive(["po", "-n", "demo"], [(WARM, seq(":ctx")), (WARM + 1.2, [b"\r"])]))))
 
 check("30 helm-myrel-row", lambda: ((lambda t: (b"myrel" in t and b"deployed" in t, ""))(drive(["po", "-n", "demo"], [(WARM, seq(":helm")), (WARM + 1.2, [b"\r"])]))))
 
@@ -337,7 +337,7 @@ check("36 ns-persistence-across-sessions", _36)
 
 def _37():
     import subprocess as _sp
-    raw = _sp.run(["kubectl","--context","kind-k10s-test","get","ns","-o","name"],capture_output=True).stdout
+    raw = _sp.run(["kubectl","--context","kind-k9x-test","get","ns","-o","name"],capture_output=True).stdout
     ns_lines = [l.split(b"/")[1] for l in raw.splitlines() if b"/" in l]
     want = sorted(ns_lines)[0] if ns_lines else b"default"
     t = drive(["po", "-n", "demo"], [(WARM + 1.0, [b"1"])], total=15, full=True)
@@ -349,13 +349,13 @@ check("37 numeric-ns-shortcut", _37)
 def _38():
     # context aliases: :context opens contexts menu listing kind cluster
     t = drive(["po", "-n", "demo"], [(WARM, seq(":context")), (WARM + 1.8, [b"\r"])], total=13)
-    return (b"contexts" in t.lower() and b"kind-k10s-test" in t, "")
+    return (b"contexts" in t.lower() and b"kind-k9x-test" in t, "")
 check("38 ctx-alias-command", _38)
 
 def _39():
     # C shortcut opens contexts menu
     t = drive(["po", "-n", "demo"], [(WARM, [b"C"])], total=12)
-    return (b"contexts" in t.lower() and b"kind-k10s-test" in t, "")
+    return (b"contexts" in t.lower() and b"kind-k9x-test" in t, "")
 check("39 C-opens-contexts", _39)
 
 def _41():
