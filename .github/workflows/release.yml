@@ -1,0 +1,216 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name (e.g. v0.2.0)"
+        required: true
+        default: "v0.2.0"
+
+permissions:
+  contents: write
+
+jobs:
+  # -------------------------------------------------------------
+  # 1. Build Binaries across OS / Architectures
+  # -------------------------------------------------------------
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Build macOS targets
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+
+      - name: Package macOS binaries
+        run: |
+          TAG="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          VER="${TAG#v}"
+          mkdir -p dist
+
+          # 1. Apple Silicon (arm64)
+          mkdir -p dist/arm64
+          cp target/aarch64-apple-darwin/release/k9x dist/arm64/k9x
+          cp LICENSE dist/arm64/
+          tar -czf dist/k9x-${VER}-darwin-arm64.tar.gz -C dist/arm64 k9x LICENSE
+
+          # 2. Intel (amd64)
+          mkdir -p dist/amd64
+          cp target/x86_64-apple-darwin/release/k9x dist/amd64/k9x
+          cp LICENSE dist/amd64/
+          tar -czf dist/k9x-${VER}-darwin-amd64.tar.gz -C dist/amd64 k9x LICENSE
+
+          # 3. macOS Universal Binary
+          mkdir -p dist/universal
+          lipo -create -output dist/universal/k9x \
+            target/aarch64-apple-darwin/release/k9x \
+            target/x86_64-apple-darwin/release/k9x
+          cp LICENSE dist/universal/
+          tar -czf dist/k9x-${VER}-darwin-universal.tar.gz -C dist/universal k9x LICENSE
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: dist/*.tar.gz
+
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            arch: amd64
+          - target: aarch64-unknown-linux-musl
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Cross-compilation Tools
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+            sudo apt-get update && sudo apt-get install -y musl-tools
+          fi
+          cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build Linux target
+        run: |
+          cross build --release --target ${{ matrix.target }}
+
+      - name: Package Linux binary
+        run: |
+          TAG="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          VER="${TAG#v}"
+          mkdir -p dist/${{ matrix.arch }}
+          cp target/${{ matrix.target }}/release/k9x dist/${{ matrix.arch }}/k9x
+          cp LICENSE dist/${{ matrix.arch }}/
+          tar -czf "dist/k9x-${VER}-linux-${{ matrix.arch }}.tar.gz" -C dist/${{ matrix.arch }} k9x LICENSE
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}-artifact
+          path: dist/*.tar.gz
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build Windows target
+        run: |
+          cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Package Windows binary
+        shell: pwsh
+        run: |
+          $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "${{ inputs.tag }}" }
+          $ver = $tag.TrimStart("v")
+          New-Item -ItemType Directory -Force -Path dist/windows
+          Copy-Item target/x86_64-pc-windows-msvc/release/k9x.exe dist/windows/k9x.exe
+          Copy-Item LICENSE dist/windows/LICENSE
+          Compress-Archive -Path dist/windows/* -DestinationPath "dist/k9x-$ver-windows-amd64.zip"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifact
+          path: dist/*.zip
+
+  # -------------------------------------------------------------
+  # 2. Release & Public Distribution Publishing
+  # -------------------------------------------------------------
+  publish:
+    needs: [build-macos, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate Checksums
+        run: |
+          TAG="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          mkdir -p release-assets
+          cp artifacts/* release-assets/
+          cd release-assets
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || inputs.tag }}
+          name: "k9x ${{ github.ref_name || inputs.tag }}"
+          files: release-assets/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew Tap Formula
+        if: env.PUBLIC_REPO_TOKEN != ''
+        env:
+          PUBLIC_REPO_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
+          TAP_REPO: "sudhikumar-work/homebrew-tap"
+          TAG: ${{ github.ref_name || inputs.tag }}
+        run: |
+          VER="${TAG#v}"
+          cd release-assets
+          SHA_DARWIN_ARM64=$(grep "k9x-${VER}-darwin-arm64.tar.gz" checksums.txt | awk '{print $1}' || true)
+          SHA_DARWIN_AMD64=$(grep "k9x-${VER}-darwin-amd64.tar.gz" checksums.txt | awk '{print $1}' || true)
+          SHA_LINUX_ARM64=$(grep "k9x-${VER}-linux-arm64.tar.gz" checksums.txt | awk '{print $1}' || true)
+          SHA_LINUX_AMD64=$(grep "k9x-${VER}-linux-amd64.tar.gz" checksums.txt | awk '{print $1}' || true)
+          cd ..
+
+          echo "Darwin ARM64 SHA: ${SHA_DARWIN_ARM64}"
+          echo "Darwin AMD64 SHA: ${SHA_DARWIN_AMD64}"
+          echo "Linux ARM64 SHA:  ${SHA_LINUX_ARM64}"
+          echo "Linux AMD64 SHA:  ${SHA_LINUX_AMD64}"
+
+          # Clone tap repo, update Formula/k9x.rb, and commit
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          if git clone "https://x-access-token:${PUBLIC_REPO_TOKEN}@github.com/${TAP_REPO}.git" tap_dir 2>/dev/null; then
+            mkdir -p tap_dir/Formula
+            sed -e "s/version \".*\"/version \"${VER}\"/" \
+                -e "s/REPLACE_WITH_DARWIN_ARM64_SHA256/${SHA_DARWIN_ARM64}/" \
+                -e "s/REPLACE_WITH_DARWIN_AMD64_SHA256/${SHA_DARWIN_AMD64}/" \
+                -e "s/REPLACE_WITH_LINUX_ARM64_SHA256/${SHA_LINUX_ARM64}/" \
+                -e "s/REPLACE_WITH_LINUX_AMD64_SHA256/${SHA_LINUX_AMD64}/" \
+                Formula/k9x.rb > tap_dir/Formula/k9x.rb
+            
+            cd tap_dir
+            git add Formula/k9x.rb
+            git commit -m "feat(formula): bump k9x to ${TAG}" || true
+            git push origin main || true
+            echo "Successfully updated Homebrew Tap formula!"
+          else
+            echo "Homebrew tap repository ${TAP_REPO} not found or inaccessible; skipping automatic tap update."
+          fi
+
