@@ -1336,6 +1336,7 @@ dependencies = [
  "http",
  "k8s-openapi",
  "kube",
+ "libc",
  "ratatui",
  "serde",
  "serde_json",

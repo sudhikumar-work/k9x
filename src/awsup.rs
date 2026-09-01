@@ -216,6 +216,7 @@ async fn fetch_from_aws(region: &str) -> Option<BTreeMap<String, SupDates>> {
                     "json",
                 ])
                 .env("AWS_CLI_AUTO_PROMPT", "off")
+                .stderr(std::process::Stdio::null())
                 .output()
         }),
     )

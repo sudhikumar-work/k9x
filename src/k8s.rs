@@ -1,5 +1,5 @@
 use crate::model::{KindSpec, Row, extract};
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Result, anyhow};
 use chrono::Utc;
 use futures::AsyncBufReadExt;
 use kube::{
@@ -25,8 +25,9 @@ pub struct Cluster {
     pub kubeconfig: Kubeconfig,
 }
 use kube::Api;
-use kube::config::Kubeconfig;
+use kube::config::{Kubeconfig, KubeconfigError};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::Instant;
 
 /// In-memory LRU connection pool caching active `Cluster` instances (HTTP/2 TLS connections)
@@ -68,8 +69,161 @@ impl ClusterPool {
     }
 }
 
-pub async fn load(context_override: Option<&str>) -> Result<Cluster> {
-    let kc = Kubeconfig::read().context("kubeconfig read")?;
+/// Why k9x cannot find any Kubernetes configuration — distinguishes a machine
+/// where Kubernetes is simply *not configured* (informational, expected state)
+/// from a genuine connection/authentication failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoCluster {
+    /// No kubeconfig file exists (no `~/.kube/config` and no `$KUBECONFIG` file).
+    NoKubeconfig(PathBuf),
+    /// A kubeconfig exists but defines zero contexts.
+    NoContexts,
+    /// Contexts exist but none is selected as the current context.
+    NoCurrentContext,
+    /// The requested context name is not defined in the kubeconfig.
+    UnknownContext(String),
+}
+
+impl std::fmt::Display for NoCluster {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoCluster::NoKubeconfig(path) => {
+                write!(f, "no kubeconfig found (searched `{}`)", path.display())
+            }
+            NoCluster::NoContexts => write!(f, "kubeconfig exists but defines no contexts"),
+            NoCluster::NoCurrentContext => write!(f, "no current-context is selected"),
+            NoCluster::UnknownContext(name) => {
+                write!(f, "context '{name}' is not defined in the kubeconfig")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NoCluster {}
+
+/// Result of probing the local Kubernetes configuration before connecting.
+#[derive(Debug)]
+pub enum KubeProbe {
+    /// A usable kubeconfig (and context selection) is present.
+    Ready(Box<Kubeconfig>),
+    /// No clusters configured (informational).
+    NotConfigured(NoCluster),
+    /// The kubeconfig exists but could not be read/parsed — a genuine error.
+    ReadError(String),
+}
+
+impl KubeProbe {
+    /// Exit code + user-facing message for a probe result. The "not configured"
+    /// cases exit 0 (expected state, not an application failure); genuine
+    /// configuration problems exit 1.
+    pub fn into_exit(self) -> (i32, String) {
+        match self {
+            KubeProbe::Ready(_) => (0, String::new()),
+            KubeProbe::NotConfigured(nc) => no_cluster_exit(&nc),
+            KubeProbe::ReadError(msg) => (1, format!("Error: failed to read kubeconfig: {msg}")),
+        }
+    }
+}
+
+/// Human-readable, actionable message for a "no Kubernetes configured" state.
+/// Never labels this as a connection or credential failure.
+pub fn no_cluster_exit(nc: &NoCluster) -> (i32, String) {
+    match nc {
+        NoCluster::NoKubeconfig(path) => (
+            0,
+            format!(
+                "No Kubernetes configuration found.\n\n\
+                 k9x requires an existing Kubernetes context to connect to a cluster.\n\
+                 No kubeconfig was found (searched `{}`).\n\n\
+                 Configure your kubeconfig/context and run k9x again.\n\n\
+                 Exiting.",
+                path.display()
+            ),
+        ),
+        NoCluster::NoContexts => (
+            0,
+            "No Kubernetes context is configured.\n\n\
+             k9x requires an existing Kubernetes context to connect to a cluster.\n\
+             A kubeconfig exists but it defines no contexts and no current-context.\n\n\
+             Configure your kubeconfig/context and run k9x again.\n\n\
+             Exiting."
+                .to_string(),
+        ),
+        NoCluster::NoCurrentContext => (
+            0,
+            "No Kubernetes context is configured.\n\n\
+             k9x requires a current context to be selected in your kubeconfig.\n\
+             Select one with `kubectl config use-context <name>`, then run k9x again.\n\n\
+             Exiting."
+                .to_string(),
+        ),
+        NoCluster::UnknownContext(name) => (
+            1,
+            format!(
+                "Kubernetes context '{name}' is not defined in your kubeconfig.\n\n\
+                 k9x requires an existing Kubernetes context to connect to a cluster.\n\
+                 List available contexts with `kubectl config get-contexts`, then run k9x again.\n\n\
+                 Exiting."
+            ),
+        ),
+    }
+}
+
+/// Probe the local Kubernetes configuration (kubeconfig discovery + context
+/// selection) and classify the outcome. See [`KubeProbe`].
+pub fn probe_kube_config(context_override: Option<&str>) -> KubeProbe {
+    match Kubeconfig::read() {
+        Ok(kc) => classify_kubeconfig(kc, context_override),
+        Err(e) => classify_read_error(e),
+    }
+}
+
+fn classify_kubeconfig(kc: Kubeconfig, context_override: Option<&str>) -> KubeProbe {
+    if let Some(want) = context_override {
+        return if kc.contexts.iter().any(|c| c.name == want) {
+            KubeProbe::Ready(Box::new(kc))
+        } else {
+            KubeProbe::NotConfigured(NoCluster::UnknownContext(want.to_string()))
+        };
+    }
+    if kc.contexts.is_empty() {
+        return KubeProbe::NotConfigured(NoCluster::NoContexts);
+    }
+    if kc.current_context.is_none() {
+        return KubeProbe::NotConfigured(NoCluster::NoCurrentContext);
+    }
+    KubeProbe::Ready(Box::new(kc))
+}
+
+fn classify_read_error(e: KubeconfigError) -> KubeProbe {
+    match &e {
+        KubeconfigError::ReadConfig(io, path) if io.kind() == std::io::ErrorKind::NotFound => {
+            KubeProbe::NotConfigured(NoCluster::NoKubeconfig(path.clone()))
+        }
+        KubeconfigError::FindPath => {
+            KubeProbe::NotConfigured(NoCluster::NoKubeconfig(PathBuf::from("~/.kube/config")))
+        }
+        // parse/permission/other read problems are genuine configuration errors
+        other => KubeProbe::ReadError(other.to_string()),
+    }
+}
+
+/// Recover a "not configured" classification from a connect error, so callers
+/// can treat it as an informational expected state instead of a failure.
+pub fn classify_connect_err(e: &anyhow::Error) -> Option<NoCluster> {
+    e.chain().find_map(|cause| cause.downcast_ref::<NoCluster>().cloned())
+}
+
+fn no_cluster_err(p: KubeProbe) -> anyhow::Error {
+    match p {
+        KubeProbe::Ready(_) => anyhow!("cluster is configured"),
+        KubeProbe::NotConfigured(nc) => anyhow::Error::new(nc),
+        KubeProbe::ReadError(msg) => anyhow::Error::msg(format!("failed to read kubeconfig: {msg}"))
+            .context("kubeconfig read"),
+    }
+}
+
+async fn assemble_cluster(kc: Kubeconfig, context_override: Option<&str>) -> Result<Cluster> {
     let ctx_name = context_override
         .map(String::from)
         .or_else(|| kc.current_context.clone())
@@ -87,15 +241,27 @@ pub async fn load(context_override: Option<&str>) -> Result<Cluster> {
     })
 }
 
+pub async fn load(context_override: Option<&str>) -> Result<Cluster> {
+    match probe_kube_config(context_override) {
+        KubeProbe::Ready(kc) => assemble_cluster(*kc, context_override).await,
+        other => Err(no_cluster_err(other)),
+    }
+}
+
 pub async fn load_pooled(
     pool: &std::sync::Mutex<ClusterPool>,
     context_override: Option<&str>,
 ) -> Result<Arc<Cluster>> {
-    let kc = Kubeconfig::read().context("kubeconfig read")?;
-    let ctx_name = context_override
-        .map(String::from)
-        .or_else(|| kc.current_context.clone())
-        .ok_or_else(|| anyhow!("no current-context set"))?;
+    let (ctx_name, kc) = match probe_kube_config(context_override) {
+        KubeProbe::Ready(kc) => {
+            let name = context_override
+                .map(String::from)
+                .or_else(|| kc.current_context.clone())
+                .unwrap_or_default();
+            (name, kc)
+        }
+        other => return Err(no_cluster_err(other)),
+    };
 
     if let Ok(mut g) = pool.lock()
         && let Some(c) = g.get(&ctx_name)
@@ -103,17 +269,7 @@ pub async fn load_pooled(
         return Ok(c);
     }
 
-    let mut kcc = kc.clone();
-    kcc.current_context = Some(ctx_name.clone());
-    let cfg = Config::from_custom_kubeconfig(kcc, &Default::default()).await?;
-    let client = Client::try_from(cfg)?;
-    let contexts = kc.contexts.iter().map(|c| c.name.clone()).collect();
-    let cluster = Arc::new(Cluster {
-        client,
-        ctx_name: ctx_name.clone(),
-        contexts,
-        kubeconfig: kc,
-    });
+    let cluster = Arc::new(assemble_cluster(*kc, context_override).await?);
 
     if let Ok(mut g) = pool.lock() {
         g.insert(ctx_name, cluster.clone());
@@ -2298,5 +2454,134 @@ mod auth_tests {
         ));
         assert!(!is_auth_expired("403 forbidden"));
         assert!(!is_auth_expired("connection refused"));
+    }
+}
+
+#[cfg(test)]
+mod kubeconfig_state_tests {
+    use super::*;
+    use kube::config::NamedContext;
+
+    fn named(name: &str) -> NamedContext {
+        NamedContext {
+            name: name.to_string(),
+            context: Some(kube::config::Context {
+                cluster: "c1".to_string(),
+                user: Some("u1".to_string()),
+                namespace: None,
+                extensions: None,
+                other: Default::default(),
+            }),
+            other: Default::default(),
+        }
+    }
+
+    fn empty_kc() -> Kubeconfig {
+        Kubeconfig::default()
+    }
+
+    fn kc_with_contexts() -> Kubeconfig {
+        let mut kc = empty_kc();
+        kc.contexts.push(named("alpha"));
+        kc.contexts.push(named("beta"));
+        kc
+    }
+
+    #[test]
+    fn missing_kubeconfig_is_not_error_state() {
+        let path = std::path::PathBuf::from("/no/such/kubeconfig");
+        let io = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
+        match classify_read_error(KubeconfigError::ReadConfig(io, path.clone())) {
+            KubeProbe::NotConfigured(NoCluster::NoKubeconfig(p)) => assert_eq!(p, path),
+            other => panic!("expected NoKubeconfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unreadable_kubeconfig_is_a_real_error() {
+        let io = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        match classify_read_error(KubeconfigError::ReadConfig(io, "secret".into())) {
+            KubeProbe::ReadError(_) => {}
+            other => panic!("expected ReadError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_kubeconfig_means_no_contexts() {
+        match classify_kubeconfig(empty_kc(), None) {
+            KubeProbe::NotConfigured(NoCluster::NoContexts) => {}
+            other => panic!("expected NoContexts, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn contexts_without_current_context() {
+        match classify_kubeconfig(kc_with_contexts(), None) {
+            KubeProbe::NotConfigured(NoCluster::NoCurrentContext) => {}
+            other => panic!("expected NoCurrentContext, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explicit_context_must_exist() {
+        let kc = kc_with_contexts();
+        match classify_kubeconfig(kc.clone(), Some("beta")) {
+            KubeProbe::Ready(_) => {}
+            other => panic!("expected Ready, got {other:?}"),
+        }
+        match classify_kubeconfig(kc, Some("vapor")) {
+            KubeProbe::NotConfigured(NoCluster::UnknownContext(n)) => assert_eq!(n, "vapor"),
+            other => panic!("expected UnknownContext, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ready_when_current_context_selected() {
+        let mut kc = kc_with_contexts();
+        kc.current_context = Some("alpha".to_string());
+        match classify_kubeconfig(kc, None) {
+            KubeProbe::Ready(_) => {}
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn not_configured_messages_are_informational_and_actionable() {
+        let (code, msg) = no_cluster_exit(&NoCluster::NoKubeconfig(PathBuf::from("~/.kube/config")));
+        assert_eq!(code, 0, "not-configured must NOT be an application error");
+        for needle in [
+            "No Kubernetes configuration found",
+            "requires an existing Kubernetes context",
+            "Configure your kubeconfig/context",
+            "Exiting",
+        ] {
+            assert!(msg.contains(needle), "message missing '{needle}': {msg}");
+        }
+        // must never mention cloud credentials for an unconfigured machine
+        assert!(!msg.to_lowercase().contains("aws"), "msg: {msg}");
+        assert!(!msg.to_lowercase().contains("cloud"), "msg: {msg}");
+
+        let (code2, msg2) = no_cluster_exit(&NoCluster::NoContexts);
+        assert_eq!(code2, 0);
+        for needle in ["No Kubernetes context is configured", "Exiting"] {
+            assert!(msg2.contains(needle), "message missing '{needle}': {msg2}");
+        }
+
+        let (code3, msg3) = no_cluster_exit(&NoCluster::UnknownContext("vapor".into()));
+        assert_eq!(code3, 1, "unknown explicit context is a real user error");
+        assert!(msg3.contains("'vapor'"), "msg: {msg3}");
+        assert!(msg3.contains("get-contexts"), "msg: {msg3}");
+    }
+
+    #[test]
+    fn connect_err_classifies_not_configured() {
+        let err = anyhow::Error::new(NoCluster::NoCurrentContext);
+        assert!(matches!(
+            classify_connect_err(&err),
+            Some(NoCluster::NoCurrentContext)
+        ));
+        // genuine errors must NOT be classified as "not configured"
+        let genuine = anyhow!("Unreachable: connection refused: 10.0.0.1:443");
+        assert!(classify_connect_err(&genuine).is_none());
     }
 }

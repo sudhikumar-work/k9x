@@ -16,6 +16,7 @@ type Pod = k8s_openapi::api::core::v1::Pod;
 use chrono::Utc;
 use model::{KindSpec, spec_for};
 use serde_json::Value;
+use std::io::IsTerminal as _;
 use std::sync::Arc;
 
 #[derive(ClapParser, Debug)]
@@ -182,12 +183,109 @@ type KeyTx = tokio::sync::mpsc::UnboundedSender<InputEvent>;
 
 static INPUT_PAUSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Heuristic: does this error text implicate a token/credential/authorization
+/// problem (as opposed to e.g. a missing kubeconfig or plain connect failure)?
+fn authish(m: &str) -> bool {
+    let l = m.to_lowercase();
+    [
+        "token",
+        "expired",
+        "unauthorized",
+        "401",
+        "auth",
+        "credential",
+        "access denied",
+        "invalid_grant",
+    ]
+    .iter()
+    .any(|k| l.contains(k))
+}
+
+/// Map a cluster-connect failure to a final user-facing error.
+/// "Not configured" states must never be rendered as a connection failure:
+/// they are re-raised so `main` turns them into a graceful informational exit
+/// (code 0). Genuine auth/connect failures keep accurate text, and only point
+/// at cloud credentials when an authentication problem is actually implicated.
+fn connect_err(e: anyhow::Error) -> anyhow::Error {
+    if let Some(nc) = k8s::classify_connect_err(&e) {
+        return anyhow::Error::new(nc);
+    }
+    let raw = e.to_string();
+    let hint = if authish(&raw) {
+        "\n→ refresh cloud credentials (e.g. `aws sso login`) and retry"
+    } else {
+        ""
+    };
+    anyhow!("cluster connect failed: {raw}{hint}")
+}
+
+#[cfg(unix)]
+static SAVED_STDERR_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+#[cfg(unix)]
+pub(crate) fn silence_tui_stderr() {
+    unsafe {
+        if SAVED_STDERR_FD.load(std::sync::atomic::Ordering::SeqCst) >= 0 {
+            return;
+        }
+        let orig = libc::dup(libc::STDERR_FILENO);
+        if orig < 0 {
+            return;
+        }
+        let _ = libc::fcntl(orig, libc::F_SETFD, libc::FD_CLOEXEC);
+        let dev_null = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY);
+        if dev_null >= 0 {
+            libc::dup2(dev_null, libc::STDERR_FILENO);
+            libc::close(dev_null);
+            SAVED_STDERR_FD.store(orig, std::sync::atomic::Ordering::SeqCst);
+        } else {
+            libc::close(orig);
+        }
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn restore_tui_stderr() {
+    unsafe {
+        let orig = SAVED_STDERR_FD.swap(-1, std::sync::atomic::Ordering::SeqCst);
+        if orig >= 0 {
+            libc::dup2(orig, libc::STDERR_FILENO);
+            libc::close(orig);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn silence_tui_stderr() {}
+#[cfg(not(unix))]
+pub(crate) fn restore_tui_stderr() {}
+
+pub(crate) fn init_tui() -> ratatui::DefaultTerminal {
+    silence_tui_stderr();
+    let terminal = ratatui::init();
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
+    terminal
+}
+
+pub(crate) fn restore_tui() {
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+    ratatui::restore();
+    restore_tui_stderr();
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    rt.block_on(run(args))
+    match rt.block_on(run(args)) {
+        Err(e) if let Some(nc) = e.downcast_ref::<k8s::NoCluster>().cloned() => {
+            let (code, msg) = k8s::no_cluster_exit(&nc);
+            eprintln!("{msg}");
+            std::process::exit(code);
+        }
+        other => other,
+    }
 }
 
 async fn run(args: Args) -> Result<()> {
@@ -231,6 +329,26 @@ async fn run(args: Args) -> Result<()> {
         });
     let pool = Arc::new(std::sync::Mutex::new(k8s::ClusterPool::new()));
 
+    // Pre-flight guards run BEFORE the terminal is touched (alternate screen /
+    // raw mode), so a machine with no Kubernetes config exits cleanly without
+    // emitting any escape-sequence noise on the failure path.
+    if !std::io::stdout().is_terminal() {
+        eprintln!(
+            "k9x requires an interactive terminal (TTY) for its TUI.\n\
+             Run `k9x` inside a terminal emulator, or use agent subcommands for scripting:\n\
+             \n    k9x ls pods\n    k9x get deploy <name>\n    k9x logs <pod>"
+        );
+        std::process::exit(1);
+    }
+    match k8s::probe_kube_config(ctx.as_deref()) {
+        k8s::KubeProbe::Ready(_) => {}
+        probe => {
+            let (code, msg) = probe.into_exit();
+            eprintln!("{msg}");
+            std::process::exit(code);
+        }
+    }
+
     let (key_tx, mut key_rx): (KeyTx, _) = tokio::sync::mpsc::unbounded_channel();
     // paused while $EDITOR runs so the reader never steals vim's keystrokes
     std::thread::spawn(move || {
@@ -262,13 +380,11 @@ async fn run(args: Args) -> Result<()> {
 
     let default_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
-        ratatui::restore();
+        restore_tui();
         default_panic(info);
     }));
 
-    let mut terminal = ratatui::init();
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
+    let mut terminal = init_tui();
 
     let ns_o = args
         .namespace
@@ -300,16 +416,16 @@ async fn run(args: Args) -> Result<()> {
     }
 
     let mut app = if args.splashless {
-        let cluster = k8s::load_pooled(&pool, ctx.as_deref()).await.map_err(|e| {
-            ratatui::restore();
-            anyhow!(
-                "cluster connect failed: {e}\n→ refresh cloud credentials (e.g. `aws sso login`) and retry"
-            )
-        })?;
+        let cluster = k8s::load_pooled(&pool, ctx.as_deref())
+            .await
+            .map_err(|e| {
+                restore_tui();
+                connect_err(e)
+            })?;
         App::new(cluster, ns_o, all, ro, theme, log_cap, log_tail)
             .await
             .inspect_err(|_| {
-                ratatui::restore();
+                restore_tui();
             })?
     } else {
         let pool_cl = pool.clone();
@@ -318,11 +434,9 @@ async fn run(args: Args) -> Result<()> {
         let theme_cl = theme.clone();
 
         let connect_task = tokio::spawn(async move {
-            let cluster = k8s::load_pooled(&pool_cl, ctx_cl.as_deref()).await.map_err(|e| {
-                anyhow!(
-                    "cluster connect failed: {e}\n→ refresh cloud credentials (e.g. `aws sso login`) and retry"
-                )
-            })?;
+            let cluster = k8s::load_pooled(&pool_cl, ctx_cl.as_deref())
+                .await
+                .map_err(connect_err)?;
             App::new(cluster, ns_cl, all, ro, theme_cl, log_cap, log_tail).await
         });
 
@@ -337,11 +451,11 @@ async fn run(args: Args) -> Result<()> {
                     match res {
                         Ok(Ok(app)) => break app,
                         Ok(Err(e)) => {
-                            ratatui::restore();
+                            restore_tui();
                             return Err(e);
                         }
                         Err(e) => {
-                            ratatui::restore();
+                            restore_tui();
                             return Err(anyhow!("startup failed: {e}"));
                         }
                     }
@@ -358,7 +472,7 @@ async fn run(args: Args) -> Result<()> {
                                 if k.code == crossterm::event::KeyCode::Char('c')
                                     && k.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
                                 {
-                                    ratatui::restore();
+                                    restore_tui();
                                     std::process::exit(0);
                                 }
                             }
@@ -440,8 +554,7 @@ async fn run(args: Args) -> Result<()> {
     st.save();
 
     app.shutdown();
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
-    ratatui::restore();
+    restore_tui();
     result
 }
 
@@ -632,19 +745,6 @@ async fn event_loop(
                         }
                     }
                     Err(fb_err) => {
-                        let authish = |m: &str| {
-                            let l = m.to_lowercase();
-                            [
-                                "token",
-                                "expired",
-                                "unauthorized",
-                                "401",
-                                "auth",
-                                "credential",
-                            ]
-                            .iter()
-                            .any(|k| l.contains(k))
-                        };
                         let auth_fail =
                             authish(&primary_err.to_string()) || authish(&fb_err.to_string());
                         let title = if auth_fail {
@@ -669,6 +769,7 @@ async fn event_loop(
                             ],
                             ok_exits: true,
                         };
+                        let _ = terminal.clear();
                         app.restart_watch_if_pulse_left();
                     }
                 },
@@ -2541,6 +2642,7 @@ impl Drop for ResumeOnDrop {
 fn suspend_tui() {
     INPUT_PAUSE.store(true, std::sync::atomic::Ordering::Relaxed);
     std::thread::sleep(std::time::Duration::from_millis(140)); // let in-flight reads finish
+    restore_tui_stderr();
     use crossterm::{execute, terminal};
     let _ = terminal::disable_raw_mode();
     let mut out = std::io::stdout();
@@ -2556,6 +2658,7 @@ fn suspend_tui() {
 static JUST_RESUMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn resume_tui() {
+    silence_tui_stderr();
     use crossterm::{execute, terminal};
     let _ = terminal::enable_raw_mode();
     let mut out = std::io::stdout();
@@ -3539,14 +3642,17 @@ async fn agent_run(cmd: Cmd, args: &Args) -> Result<()> {
                 println!("{c}");
                 return Ok(());
             }
-            let kc = kube::config::Kubeconfig::read()?;
-            for c in kc.contexts.iter() {
-                let mark = if Some(&c.name) == kc.current_context.as_ref() {
-                    "*"
-                } else {
-                    " "
-                };
-                println!("{mark} {}", c.name);
+            // Missing/empty kubeconfig is not an error for `ctx`: it simply
+            // lists nothing and exits 0 (an expected, unconfigured state).
+            if let k8s::KubeProbe::Ready(kc) = k8s::probe_kube_config(None) {
+                for c in kc.contexts.iter() {
+                    let mark = if Some(&c.name) == kc.current_context.as_ref() {
+                        "*"
+                    } else {
+                        " "
+                    };
+                    println!("{mark} {}", c.name);
+                }
             }
             Ok(())
         }
@@ -4182,5 +4288,14 @@ mod tests {
             .collect();
         assert_eq!(active.len(), 2);
         assert_eq!(active, vec!["demo/web-1", "demo/web-2"]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_stderr_silence_and_restore() {
+        silence_tui_stderr();
+        eprintln!("this should be safely discarded to /dev/null");
+        restore_tui_stderr();
+        restore_tui_stderr();
     }
 }

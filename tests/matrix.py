@@ -1,7 +1,7 @@
 """k9x feature matrix — pty-driven end-to-end tests against a local kind cluster.
 Usage: python3 tests/matrix.py [case-substring ...]   (no args = all cases)
 """
-import pty, os, time, select, fcntl, termios, struct, re, glob, subprocess, sys
+import pty, os, time, select, fcntl, termios, struct, re, glob, subprocess, sys, signal
 import pyte
 
 BIN = os.environ.get("K9X_BIN") or (os.path.expanduser("~/.local/bin/k9x") if os.path.exists(os.path.expanduser("~/.local/bin/k9x")) else os.path.abspath("target/release/k9x"))
@@ -11,11 +11,15 @@ KUBECTL_CTX = "kind-k9x-test"
 def kubectl(*a):
     return subprocess.run(["kubectl", "--context", KUBECTL_CTX, *a], capture_output=True).stdout
 
-def drive(args, script, total=14.0, full=False):
-    """script: list of (t_seconds, [bytes keys]) — sorted defensively."""
+def drive(args, script, total=14.0, full=False, env_extra=None):
+    """script: list of (t_seconds, [bytes keys]) — sorted defensively.
+    env_extra: optional dict of env overrides applied in the child (e.g. a
+    KUBECONFIG pointing nowhere to simulate a fresh machine)."""
     script = sorted(script, key=lambda x: x[0])
     pid, fd = pty.fork()
     if pid == 0:
+        if env_extra:
+            os.environ.update(env_extra)
         os.execv(BIN, ["k9x"] + CTX + args)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 45, 170, 0, 0))
     buf = bytearray()
@@ -397,6 +401,72 @@ def _45():
     ok = b"occ" in t.lower()
     return (ok, t[-200:])
 check("45 log-occurrence-toggle-o", _45)
+
+def _46():
+    # Fresh machine: no kubeconfig anywhere. k9x must exit on its own with a
+    # clear informational message, exit code 0, and ZERO raw escape sequences.
+    if not os.path.exists(BIN):
+        return (True, "no bin")
+    env_extra = {"KUBECONFIG": "/nonexistent/k9x-kubeconfig", "HOME": "/nonexistent/k9x-home"}
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ.update(env_extra)
+        os.execv(BIN, ["k9x"])
+    buf = bytearray(); t0 = time.time(); code = None
+    while time.time() - t0 < 10:
+        r, _, _ = select.select([fd], [], [], 0.3)
+        if r:
+            try:
+                d = os.read(fd, 65536)
+                if not d:
+                    break
+                buf.extend(d)
+            except OSError:
+                break
+        p, st = os.waitpid(pid, os.WNOHANG)
+        if p == pid:
+            code = st
+            break
+    if code is None:
+        for _ in range(50):  # reap the (short-lived) child after EIO on read
+            p, st = os.waitpid(pid, os.WNOHANG)
+            if p == pid:
+                code = st
+                break
+            time.sleep(0.05)
+        if code is None:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.close(fd)
+    raw = bytes(buf)
+    has_ansi = b"\x1b" in raw
+    text = raw.decode(errors="replace")
+    ok_msg = "No Kubernetes configuration found" in text and "Exiting" in text
+    ok_exit = code == 0
+    return (ok_msg and not has_ansi and ok_exit, f"exit={code} ansi={has_ansi}")
+check("46 fresh-machine-no-kubeconfig", _46)
+
+def _47():
+    # Non-TTY / piped stdout must produce NO ANSI bytes and a clean message.
+    if not os.path.exists(BIN):
+        return (True, "no bin")
+    try:
+        r = subprocess.run(
+            [BIN],
+            capture_output=True,
+            timeout=20,
+            env={**os.environ, "KUBECONFIG": "/nonexistent/k9x-kubeconfig", "HOME": "/nonexistent/k9x-home"},
+        )
+    except Exception as e:  # noqa: BLE001
+        return (False, f"exc {e}")
+    out = (r.stdout or b"") + (r.stderr or b"")
+    has_ansi = b"\x1b" in out
+    low = out.lower()
+    ok = b"interactive terminal" in low and not has_ansi
+    return (ok and r.returncode == 1, f"exit={r.returncode} ansi={has_ansi}")
+check("47 non-tty-clean-no-ansi", _47)
 
 print("\n==== SUMMARY ====")
 fails = [n for n, ok, _ in results if not ok]
