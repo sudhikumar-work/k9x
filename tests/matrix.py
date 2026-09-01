@@ -486,6 +486,13 @@ def _49():
     return (ok, t[:250])
 check("49 xray-deploy-hierarchy", _49)
 
+def _50():
+    # connect/auth failure in TTY must exit cleanly with context error and restore terminal
+    t = drive([], [], total=8, full=True, env_extra={"KUBECONFIG": "/nonexistent/test-kubeconfig"})
+    ok = b"not found" in t.lower() or b"no such file" in t.lower() or b"kubeconfig" in t.lower()
+    return (ok, t[:250])
+check("50 auth-ctx-fail-clean-exit", _50)
+
 print("\n==== SUMMARY ====")
 fails = [n for n, ok, _ in results if not ok]
 print(f"{len(results) - len(fails)}/{len(results)} PASS")

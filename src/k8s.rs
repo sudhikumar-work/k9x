@@ -211,15 +211,18 @@ fn classify_read_error(e: KubeconfigError) -> KubeProbe {
 /// Recover a "not configured" classification from a connect error, so callers
 /// can treat it as an informational expected state instead of a failure.
 pub fn classify_connect_err(e: &anyhow::Error) -> Option<NoCluster> {
-    e.chain().find_map(|cause| cause.downcast_ref::<NoCluster>().cloned())
+    e.chain()
+        .find_map(|cause| cause.downcast_ref::<NoCluster>().cloned())
 }
 
 fn no_cluster_err(p: KubeProbe) -> anyhow::Error {
     match p {
         KubeProbe::Ready(_) => anyhow!("cluster is configured"),
         KubeProbe::NotConfigured(nc) => anyhow::Error::new(nc),
-        KubeProbe::ReadError(msg) => anyhow::Error::msg(format!("failed to read kubeconfig: {msg}"))
-            .context("kubeconfig read"),
+        KubeProbe::ReadError(msg) => {
+            anyhow::Error::msg(format!("failed to read kubeconfig: {msg}"))
+                .context("kubeconfig read")
+        }
     }
 }
 
@@ -2547,7 +2550,8 @@ mod kubeconfig_state_tests {
 
     #[test]
     fn not_configured_messages_are_informational_and_actionable() {
-        let (code, msg) = no_cluster_exit(&NoCluster::NoKubeconfig(PathBuf::from("~/.kube/config")));
+        let (code, msg) =
+            no_cluster_exit(&NoCluster::NoKubeconfig(PathBuf::from("~/.kube/config")));
         assert_eq!(code, 0, "not-configured must NOT be an application error");
         for needle in [
             "No Kubernetes configuration found",

@@ -182,6 +182,16 @@ enum InputEvent {
 type KeyTx = tokio::sync::mpsc::UnboundedSender<InputEvent>;
 
 static INPUT_PAUSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static INPUT_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static TUI_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) struct TuiGuard;
+
+impl Drop for TuiGuard {
+    fn drop(&mut self) {
+        restore_tui();
+    }
+}
 
 /// Heuristic: does this error text implicate a token/credential/authorization
 /// problem (as opposed to e.g. a missing kubeconfig or plain connect failure)?
@@ -264,13 +274,37 @@ pub(crate) fn init_tui() -> ratatui::DefaultTerminal {
     silence_tui_stderr();
     let terminal = ratatui::init();
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
+    TUI_INITIALIZED.store(true, std::sync::atomic::Ordering::SeqCst);
     terminal
 }
 
 pub(crate) fn restore_tui() {
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+    INPUT_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+    if !TUI_INITIALIZED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        restore_tui_stderr();
+        return;
+    }
+    use std::io::Write as _;
+    let mut stdout = std::io::stdout();
+    // 1. Explicitly send all terminal disable codes for any mouse tracking mode, focus, and bracketed paste
+    let _ = stdout.write_all(
+        b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?2004l",
+    );
+    let _ = crossterm::execute!(stdout, crossterm::event::DisableMouseCapture);
+    // 2. Disable raw mode and leave alternate screen, show cursor
+    let _ = crossterm::terminal::disable_raw_mode();
+    let _ = crossterm::execute!(
+        stdout,
+        crossterm::terminal::LeaveAlternateScreen,
+        crossterm::cursor::Show
+    );
+    let _ = stdout.flush();
+    // 3. Restore ratatui state
     ratatui::restore();
+    let _ = std::io::stdout().flush();
+    // 4. Restore stderr and flush
     restore_tui_stderr();
+    let _ = std::io::stderr().flush();
 }
 
 fn main() -> Result<()> {
@@ -279,12 +313,20 @@ fn main() -> Result<()> {
         .enable_all()
         .build()?;
     match rt.block_on(run(args)) {
-        Err(e) if let Some(nc) = e.downcast_ref::<k8s::NoCluster>().cloned() => {
-            let (code, msg) = k8s::no_cluster_exit(&nc);
-            eprintln!("{msg}");
-            std::process::exit(code);
+        Ok(()) => {
+            restore_tui();
+            Ok(())
         }
-        other => other,
+        Err(e) => {
+            restore_tui();
+            if let Some(nc) = e.downcast_ref::<k8s::NoCluster>().cloned() {
+                let (code, msg) = k8s::no_cluster_exit(&nc);
+                eprintln!("{msg}");
+                std::process::exit(code);
+            }
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -352,7 +394,7 @@ async fn run(args: Args) -> Result<()> {
     let (key_tx, mut key_rx): (KeyTx, _) = tokio::sync::mpsc::unbounded_channel();
     // paused while $EDITOR runs so the reader never steals vim's keystrokes
     std::thread::spawn(move || {
-        loop {
+        while INPUT_RUNNING.load(std::sync::atomic::Ordering::Relaxed) {
             if INPUT_PAUSE.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::sleep(std::time::Duration::from_millis(60));
                 continue;
@@ -385,6 +427,7 @@ async fn run(args: Args) -> Result<()> {
     }));
 
     let mut terminal = init_tui();
+    let _tui_guard = TuiGuard;
 
     let ns_o = args
         .namespace
@@ -416,12 +459,10 @@ async fn run(args: Args) -> Result<()> {
     }
 
     let mut app = if args.splashless {
-        let cluster = k8s::load_pooled(&pool, ctx.as_deref())
-            .await
-            .map_err(|e| {
-                restore_tui();
-                connect_err(e)
-            })?;
+        let cluster = k8s::load_pooled(&pool, ctx.as_deref()).await.map_err(|e| {
+            restore_tui();
+            connect_err(e)
+        })?;
         App::new(cluster, ns_o, all, ro, theme, log_cap, log_tail)
             .await
             .inspect_err(|_| {
@@ -1296,13 +1337,17 @@ async fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                                         .map(|r| r.height.saturating_sub(2) as usize)
                                         .unwrap_or_else(|| {
                                             crossterm::terminal::size()
-                                                .map(|(_, rows)| (rows.saturating_sub(10) as usize).max(5))
+                                                .map(|(_, rows)| {
+                                                    (rows.saturating_sub(10) as usize).max(5)
+                                                })
                                                 .unwrap_or(20)
                                         });
                                     let total_filtered = st
                                         .lines
                                         .iter()
-                                        .filter(|l| l.to_lowercase().contains(&st.query.to_lowercase()))
+                                        .filter(|l| {
+                                            l.to_lowercase().contains(&st.query.to_lowercase())
+                                        })
                                         .count();
                                     app::ensure_log_line_visible(
                                         &mut st.scroll_from_end,
@@ -1336,7 +1381,9 @@ async fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                                     .map(|r| r.height.saturating_sub(2) as usize)
                                     .unwrap_or_else(|| {
                                         crossterm::terminal::size()
-                                            .map(|(_, rows)| (rows.saturating_sub(10) as usize).max(5))
+                                            .map(|(_, rows)| {
+                                                (rows.saturating_sub(10) as usize).max(5)
+                                            })
                                             .unwrap_or(20)
                                     });
                                 let total_filtered = st
@@ -1365,11 +1412,7 @@ async fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                             st.match_total = matches.len();
                             if !matches.is_empty() {
                                 let cur = st.match_idx.unwrap_or(0);
-                                let prev = if cur == 0 {
-                                    matches.len() - 1
-                                } else {
-                                    cur - 1
-                                };
+                                let prev = if cur == 0 { matches.len() - 1 } else { cur - 1 };
                                 st.match_idx = Some(prev);
                                 let (target_line_idx, _) = matches[prev];
                                 let inner_h = app
@@ -1377,7 +1420,9 @@ async fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                                     .map(|r| r.height.saturating_sub(2) as usize)
                                     .unwrap_or_else(|| {
                                         crossterm::terminal::size()
-                                            .map(|(_, rows)| (rows.saturating_sub(10) as usize).max(5))
+                                            .map(|(_, rows)| {
+                                                (rows.saturating_sub(10) as usize).max(5)
+                                            })
                                             .unwrap_or(20)
                                     });
                                 let total_filtered = st
@@ -1494,7 +1539,9 @@ async fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                                     .map(|r| r.height.saturating_sub(2) as usize)
                                     .unwrap_or_else(|| {
                                         crossterm::terminal::size()
-                                            .map(|(_, rows)| (rows.saturating_sub(10) as usize).max(5))
+                                            .map(|(_, rows)| {
+                                                (rows.saturating_sub(10) as usize).max(5)
+                                            })
                                             .unwrap_or(20)
                                     });
                                 let total_filtered = st
@@ -4186,7 +4233,9 @@ async fn open_xray(app: &mut App, args: &[&str]) {
                 let api = app.cluster.dyn_api(&sp, ns);
                 match api.list(&kube::api::ListParams::default().limit(1)).await {
                     Ok(list) => {
-                        if let Some(first) = list.items.into_iter().next().and_then(|o| o.metadata.name) {
+                        if let Some(first) =
+                            list.items.into_iter().next().and_then(|o| o.metadata.name)
+                        {
                             Some((sp, first))
                         } else {
                             app.set_status(format!("!no {} resources found", sp.kind));
@@ -4501,9 +4550,14 @@ mod tests {
 
         // Single match wrap-around
         let single_len = 1;
-        let next_single = (0 + 1) % single_len;
+        let s_cur: usize = 0;
+        let next_single = (s_cur + 1) % single_len;
         assert_eq!(next_single, 0);
-        let prev_single = if 0 == 0 { single_len - 1 } else { 0 - 1 };
+        let prev_single = if s_cur == 0 {
+            single_len - 1
+        } else {
+            s_cur - 1
+        };
         assert_eq!(prev_single, 0);
     }
 
@@ -4527,5 +4581,14 @@ mod tests {
         assert_eq!(lines[2], "    └── ReplicaSet/web-abc [2/2 ready]");
         assert_eq!(lines[3], "        ├── ✔ pod/web-abc-1 [1/1] Running");
         assert_eq!(lines[4], "        └── ✔ pod/web-abc-2 [1/1] Running");
+    }
+
+    #[test]
+    fn test_restore_tui_idempotency_and_state() {
+        // Calling restore_tui multiple times must be safe and idempotent
+        crate::restore_tui();
+        crate::restore_tui();
+        assert!(!crate::TUI_INITIALIZED.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!crate::INPUT_RUNNING.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

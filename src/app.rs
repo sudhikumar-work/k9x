@@ -2215,7 +2215,11 @@ impl XrayNode {
         if is_root {
             lines.push(self.text.clone());
         } else {
-            let marker = if is_last { "\u{2514}\u{2500}\u{2500} " } else { "\u{251c}\u{2500}\u{2500} " };
+            let marker = if is_last {
+                "\u{2514}\u{2500}\u{2500} "
+            } else {
+                "\u{251c}\u{2500}\u{2500} "
+            };
             lines.push(format!("{prefix}{marker}{}", self.text));
         }
         let child_prefix = if is_root {
@@ -2233,20 +2237,37 @@ impl XrayNode {
 }
 
 fn format_pod_xray_node(po: &serde_json::Value) -> XrayNode {
-    let name = po.pointer("/metadata/name").and_then(|x| x.as_str()).unwrap_or("?");
+    let name = po
+        .pointer("/metadata/name")
+        .and_then(|x| x.as_str())
+        .unwrap_or("?");
     let status = crate::model::pod_status(po);
     let restarts = crate::model::pod_restarts(po);
     let ready = po
         .pointer("/status/containerStatuses")
         .and_then(|x| x.as_array())
         .map(|a| {
-            let r = a.iter().filter(|c| c.get("ready").and_then(|x| x.as_bool()).unwrap_or(false)).count();
+            let r = a
+                .iter()
+                .filter(|c| c.get("ready").and_then(|x| x.as_bool()).unwrap_or(false))
+                .count();
             format!("{r}/{}", a.len())
         })
         .unwrap_or_else(|| "-".into());
-    let ip = po.pointer("/status/podIP").and_then(|x| x.as_str()).unwrap_or("");
-    let ip_tag = if !ip.is_empty() { format!(" ({ip})") } else { String::new() };
-    let restart_tag = if restarts > 0 { format!(" (↺{restarts})") } else { String::new() };
+    let ip = po
+        .pointer("/status/podIP")
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    let ip_tag = if !ip.is_empty() {
+        format!(" ({ip})")
+    } else {
+        String::new()
+    };
+    let restart_tag = if restarts > 0 {
+        format!(" (↺{restarts})")
+    } else {
+        String::new()
+    };
 
     let icon = match status.as_str() {
         "Running" => {
@@ -2274,9 +2295,12 @@ fn format_pod_xray_node(po: &serde_json::Value) -> XrayNode {
             let cname = c.get("name").and_then(|x| x.as_str()).unwrap_or("?");
             let image = c.get("image").and_then(|x| x.as_str()).unwrap_or("?");
             let c_status = statuses.and_then(|arr| {
-                arr.iter().find(|s| s.get("name").and_then(|n| n.as_str()) == Some(cname))
+                arr.iter()
+                    .find(|s| s.get("name").and_then(|n| n.as_str()) == Some(cname))
             });
-            let c_ready = c_status.and_then(|s| s.get("ready").and_then(|r| r.as_bool())).unwrap_or(false);
+            let c_ready = c_status
+                .and_then(|s| s.get("ready").and_then(|r| r.as_bool()))
+                .unwrap_or(false);
             let c_icon = if c_ready { "✔" } else { "•" };
             pod_node.add_child(XrayNode::new(format!(
                 "{c_icon} container/{cname} image={image}"
@@ -2302,9 +2326,16 @@ impl App {
 
         match spec.kind.as_str() {
             "Deployment" => {
-                let ready = obj_v.pointer("/status/readyReplicas").and_then(|x| x.as_i64()).unwrap_or(0);
-                let want = obj_v.pointer("/spec/replicas").and_then(|x| x.as_i64()).unwrap_or(0);
-                let mut dep_node = XrayNode::new(format!("Deployment/{name} [{ready}/{want} ready]"));
+                let ready = obj_v
+                    .pointer("/status/readyReplicas")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(0);
+                let want = obj_v
+                    .pointer("/spec/replicas")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(0);
+                let mut dep_node =
+                    XrayNode::new(format!("Deployment/{name} [{ready}/{want} ready]"));
 
                 let rs_spec = spec_for("rs").unwrap();
                 let pods_spec = spec_for("po").unwrap();
@@ -2334,15 +2365,25 @@ impl App {
                     let rs_name = rs.metadata.name.clone().unwrap_or_default();
                     let rs_uid = rs.metadata.uid.clone().unwrap_or_default();
                     let rs_v = serde_json::to_value(&rs).unwrap_or_default();
-                    let rs_ready = rs_v.pointer("/status/readyReplicas").and_then(|x| x.as_i64()).unwrap_or(0);
-                    let rs_want = rs_v.pointer("/spec/replicas").and_then(|x| x.as_i64()).unwrap_or(0);
-                    let mut rs_node = XrayNode::new(format!("ReplicaSet/{rs_name} [{rs_ready}/{rs_want} ready]"));
+                    let rs_ready = rs_v
+                        .pointer("/status/readyReplicas")
+                        .and_then(|x| x.as_i64())
+                        .unwrap_or(0);
+                    let rs_want = rs_v
+                        .pointer("/spec/replicas")
+                        .and_then(|x| x.as_i64())
+                        .unwrap_or(0);
+                    let mut rs_node =
+                        XrayNode::new(format!("ReplicaSet/{rs_name} [{rs_ready}/{rs_want} ready]"));
 
                     for po_v in &pos_values {
                         let is_child = po_v
                             .pointer("/metadata/ownerReferences")
                             .and_then(|x| x.as_array())
-                            .map(|arr| arr.iter().any(|o| o.get("uid").and_then(|u| u.as_str()) == Some(&rs_uid)))
+                            .map(|arr| {
+                                arr.iter()
+                                    .any(|o| o.get("uid").and_then(|u| u.as_str()) == Some(&rs_uid))
+                            })
                             .unwrap_or(false);
                         if is_child {
                             rs_node.add_child(format_pod_xray_node(po_v));
@@ -2357,7 +2398,10 @@ impl App {
                         let is_child = po_v
                             .pointer("/metadata/ownerReferences")
                             .and_then(|x| x.as_array())
-                            .map(|arr| arr.iter().any(|o| o.get("uid").and_then(|u| u.as_str()) == Some(&uid)))
+                            .map(|arr| {
+                                arr.iter()
+                                    .any(|o| o.get("uid").and_then(|u| u.as_str()) == Some(&uid))
+                            })
                             .unwrap_or(false);
                         if is_child {
                             dep_node.add_child(format_pod_xray_node(po_v));
@@ -2367,9 +2411,16 @@ impl App {
                 root.add_child(dep_node);
             }
             "StatefulSet" => {
-                let ready = obj_v.pointer("/status/readyReplicas").and_then(|x| x.as_i64()).unwrap_or(0);
-                let want = obj_v.pointer("/spec/replicas").and_then(|x| x.as_i64()).unwrap_or(0);
-                let mut sts_node = XrayNode::new(format!("StatefulSet/{name} [{ready}/{want} ready]"));
+                let ready = obj_v
+                    .pointer("/status/readyReplicas")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(0);
+                let want = obj_v
+                    .pointer("/spec/replicas")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(0);
+                let mut sts_node =
+                    XrayNode::new(format!("StatefulSet/{name} [{ready}/{want} ready]"));
 
                 let pods_spec = spec_for("po").unwrap();
                 let po_api = self.cluster.dyn_api(&pods_spec, ns.as_deref());
@@ -2379,9 +2430,16 @@ impl App {
                         let is_child = po_v
                             .pointer("/metadata/ownerReferences")
                             .and_then(|x| x.as_array())
-                            .map(|arr| arr.iter().any(|o| o.get("uid").and_then(|u| u.as_str()) == Some(&uid)))
+                            .map(|arr| {
+                                arr.iter()
+                                    .any(|o| o.get("uid").and_then(|u| u.as_str()) == Some(&uid))
+                            })
                             .unwrap_or(false)
-                            || po_v.pointer("/metadata/name").and_then(|x| x.as_str()).map(|n| n.starts_with(&format!("{name}-"))).unwrap_or(false);
+                            || po_v
+                                .pointer("/metadata/name")
+                                .and_then(|x| x.as_str())
+                                .map(|n| n.starts_with(&format!("{name}-")))
+                                .unwrap_or(false);
                         if is_child {
                             sts_node.add_child(format_pod_xray_node(&po_v));
                         }
@@ -2390,9 +2448,17 @@ impl App {
                 root.add_child(sts_node);
             }
             "DaemonSet" => {
-                let number_ready = obj_v.pointer("/status/numberReady").and_then(|x| x.as_i64()).unwrap_or(0);
-                let desired = obj_v.pointer("/status/desiredNumberScheduled").and_then(|x| x.as_i64()).unwrap_or(0);
-                let mut ds_node = XrayNode::new(format!("DaemonSet/{name} [{number_ready}/{desired} nodes ready]"));
+                let number_ready = obj_v
+                    .pointer("/status/numberReady")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(0);
+                let desired = obj_v
+                    .pointer("/status/desiredNumberScheduled")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(0);
+                let mut ds_node = XrayNode::new(format!(
+                    "DaemonSet/{name} [{number_ready}/{desired} nodes ready]"
+                ));
 
                 let pods_spec = spec_for("po").unwrap();
                 let po_api = self.cluster.dyn_api(&pods_spec, ns.as_deref());
@@ -2402,10 +2468,16 @@ impl App {
                         let is_child = po_v
                             .pointer("/metadata/ownerReferences")
                             .and_then(|x| x.as_array())
-                            .map(|arr| arr.iter().any(|o| o.get("uid").and_then(|u| u.as_str()) == Some(&uid)))
+                            .map(|arr| {
+                                arr.iter()
+                                    .any(|o| o.get("uid").and_then(|u| u.as_str()) == Some(&uid))
+                            })
                             .unwrap_or(false);
                         if is_child {
-                            let node_name = po_v.pointer("/spec/nodeName").and_then(|x| x.as_str()).unwrap_or("unscheduled");
+                            let node_name = po_v
+                                .pointer("/spec/nodeName")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("unscheduled");
                             let mut p_node = format_pod_xray_node(&po_v);
                             p_node.text = format!("{} (node: {node_name})", p_node.text);
                             ds_node.add_child(p_node);
@@ -2415,9 +2487,16 @@ impl App {
                 root.add_child(ds_node);
             }
             "ReplicaSet" => {
-                let ready = obj_v.pointer("/status/readyReplicas").and_then(|x| x.as_i64()).unwrap_or(0);
-                let want = obj_v.pointer("/spec/replicas").and_then(|x| x.as_i64()).unwrap_or(0);
-                let mut rs_node = XrayNode::new(format!("ReplicaSet/{name} [{ready}/{want} ready]"));
+                let ready = obj_v
+                    .pointer("/status/readyReplicas")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(0);
+                let want = obj_v
+                    .pointer("/spec/replicas")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(0);
+                let mut rs_node =
+                    XrayNode::new(format!("ReplicaSet/{name} [{ready}/{want} ready]"));
 
                 let pods_spec = spec_for("po").unwrap();
                 let po_api = self.cluster.dyn_api(&pods_spec, ns.as_deref());
@@ -2427,7 +2506,10 @@ impl App {
                         let is_child = po_v
                             .pointer("/metadata/ownerReferences")
                             .and_then(|x| x.as_array())
-                            .map(|arr| arr.iter().any(|o| o.get("uid").and_then(|u| u.as_str()) == Some(&uid)))
+                            .map(|arr| {
+                                arr.iter()
+                                    .any(|o| o.get("uid").and_then(|u| u.as_str()) == Some(&uid))
+                            })
                             .unwrap_or(false);
                         if is_child {
                             rs_node.add_child(format_pod_xray_node(&po_v));
@@ -2437,26 +2519,56 @@ impl App {
                 root.add_child(rs_node);
             }
             "Service" => {
-                let svc_type = obj_v.pointer("/spec/type").and_then(|x| x.as_str()).unwrap_or("ClusterIP");
-                let cluster_ip = obj_v.pointer("/spec/clusterIP").and_then(|x| x.as_str()).unwrap_or("None");
-                let mut svc_node = XrayNode::new(format!("Service/{name} (Type: {svc_type}, ClusterIP: {cluster_ip})"));
+                let svc_type = obj_v
+                    .pointer("/spec/type")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("ClusterIP");
+                let cluster_ip = obj_v
+                    .pointer("/spec/clusterIP")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("None");
+                let mut svc_node = XrayNode::new(format!(
+                    "Service/{name} (Type: {svc_type}, ClusterIP: {cluster_ip})"
+                ));
 
                 if let Some(ports) = obj_v.pointer("/spec/ports").and_then(|x| x.as_array()) {
                     let mut ports_grp = XrayNode::new("Ports:");
                     for p in ports {
                         let pname = p.get("name").and_then(|x| x.as_str()).unwrap_or("");
                         let port = p.get("port").and_then(|x| x.as_i64()).unwrap_or(0);
-                        let target = p.get("targetPort").map(|x| if let Some(n) = x.as_i64() { n.to_string() } else { x.as_str().unwrap_or("").to_string() }).unwrap_or_default();
+                        let target = p
+                            .get("targetPort")
+                            .map(|x| {
+                                if let Some(n) = x.as_i64() {
+                                    n.to_string()
+                                } else {
+                                    x.as_str().unwrap_or("").to_string()
+                                }
+                            })
+                            .unwrap_or_default();
                         let proto = p.get("protocol").and_then(|x| x.as_str()).unwrap_or("TCP");
-                        let node_port = p.get("nodePort").and_then(|x| x.as_i64()).map(|np| format!(" NodePort:{np}")).unwrap_or_default();
-                        let name_tag = if !pname.is_empty() { format!(" ({pname})") } else { String::new() };
-                        ports_grp.add_child(XrayNode::new(format!("{port} \u{2192} {target}/{proto}{node_port}{name_tag}")));
+                        let node_port = p
+                            .get("nodePort")
+                            .and_then(|x| x.as_i64())
+                            .map(|np| format!(" NodePort:{np}"))
+                            .unwrap_or_default();
+                        let name_tag = if !pname.is_empty() {
+                            format!(" ({pname})")
+                        } else {
+                            String::new()
+                        };
+                        ports_grp.add_child(XrayNode::new(format!(
+                            "{port} \u{2192} {target}/{proto}{node_port}{name_tag}"
+                        )));
                     }
                     svc_node.add_child(ports_grp);
                 }
 
                 if let Some(sel) = obj_v.pointer("/spec/selector").and_then(|x| x.as_object()) {
-                    let sel_pairs: Vec<String> = sel.iter().filter_map(|(k, v)| v.as_str().map(|val| format!("{k}={val}"))).collect();
+                    let sel_pairs: Vec<String> = sel
+                        .iter()
+                        .filter_map(|(k, v)| v.as_str().map(|val| format!("{k}={val}")))
+                        .collect();
                     let sel_str = sel_pairs.join(",");
                     let mut ep_grp = XrayNode::new(format!("Selector: [{}]", sel_pairs.join(", ")));
                     let pods_spec = spec_for("po").unwrap();
@@ -2464,7 +2576,8 @@ impl App {
                     let lp = kube::api::ListParams::default().labels(&sel_str);
                     let pos = po_api.list(&lp).await?;
                     if pos.items.is_empty() {
-                        ep_grp.add_child(XrayNode::new("✖ No backing pods found matching selector"));
+                        ep_grp
+                            .add_child(XrayNode::new("✖ No backing pods found matching selector"));
                     } else {
                         for po in pos.items {
                             if let Ok(po_v) = serde_json::to_value(&po) {
@@ -2474,7 +2587,9 @@ impl App {
                     }
                     svc_node.add_child(ep_grp);
                 } else {
-                    svc_node.add_child(XrayNode::new("Selector: None (Headless / External / Manual Endpoints)"));
+                    svc_node.add_child(XrayNode::new(
+                        "Selector: None (Headless / External / Manual Endpoints)",
+                    ));
                 }
                 root.add_child(svc_node);
             }
@@ -2488,9 +2603,23 @@ impl App {
                         if let Some(paths) = r.pointer("/http/paths").and_then(|x| x.as_array()) {
                             for p in paths {
                                 let path = p.get("path").and_then(|x| x.as_str()).unwrap_or("/");
-                                let svc_name = p.pointer("/backend/service/name").and_then(|x| x.as_str()).unwrap_or("?");
-                                let svc_port = p.pointer("/backend/service/port/number").and_then(|x| x.as_i64()).map(|n| n.to_string()).or_else(|| p.pointer("/backend/service/port/name").and_then(|x| x.as_str()).map(|s| s.to_string())).unwrap_or_else(|| "?".into());
-                                host_node.add_child(XrayNode::new(format!("{path} \u{2192} service/{svc_name}:{svc_port}")));
+                                let svc_name = p
+                                    .pointer("/backend/service/name")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("?");
+                                let svc_port = p
+                                    .pointer("/backend/service/port/number")
+                                    .and_then(|x| x.as_i64())
+                                    .map(|n| n.to_string())
+                                    .or_else(|| {
+                                        p.pointer("/backend/service/port/name")
+                                            .and_then(|x| x.as_str())
+                                            .map(|s| s.to_string())
+                                    })
+                                    .unwrap_or_else(|| "?".into());
+                                host_node.add_child(XrayNode::new(format!(
+                                    "{path} \u{2192} service/{svc_name}:{svc_port}"
+                                )));
                             }
                         }
                         rules_grp.add_child(host_node);
@@ -2500,11 +2629,28 @@ impl App {
                 root.add_child(ing_node);
             }
             "Job" => {
-                let succeeded = obj_v.pointer("/status/succeeded").and_then(|x| x.as_i64()).unwrap_or(0);
-                let failed = obj_v.pointer("/status/failed").and_then(|x| x.as_i64()).unwrap_or(0);
-                let completions = obj_v.pointer("/spec/completions").and_then(|x| x.as_i64()).unwrap_or(1);
-                let status_tag = if succeeded >= completions { "✔ Succeeded" } else if failed > 0 { "✖ Failed" } else { "⏳ Running" };
-                let mut job_node = XrayNode::new(format!("Job/{name} [{succeeded}/{completions} complete] {status_tag}"));
+                let succeeded = obj_v
+                    .pointer("/status/succeeded")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(0);
+                let failed = obj_v
+                    .pointer("/status/failed")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(0);
+                let completions = obj_v
+                    .pointer("/spec/completions")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(1);
+                let status_tag = if succeeded >= completions {
+                    "✔ Succeeded"
+                } else if failed > 0 {
+                    "✖ Failed"
+                } else {
+                    "⏳ Running"
+                };
+                let mut job_node = XrayNode::new(format!(
+                    "Job/{name} [{succeeded}/{completions} complete] {status_tag}"
+                ));
 
                 let pods_spec = spec_for("po").unwrap();
                 let po_api = self.cluster.dyn_api(&pods_spec, ns.as_deref());
@@ -2514,7 +2660,10 @@ impl App {
                         let is_child = po_v
                             .pointer("/metadata/ownerReferences")
                             .and_then(|x| x.as_array())
-                            .map(|arr| arr.iter().any(|o| o.get("uid").and_then(|u| u.as_str()) == Some(&uid)))
+                            .map(|arr| {
+                                arr.iter()
+                                    .any(|o| o.get("uid").and_then(|u| u.as_str()) == Some(&uid))
+                            })
                             .unwrap_or(false);
                         if is_child {
                             job_node.add_child(format_pod_xray_node(&po_v));
@@ -2524,10 +2673,17 @@ impl App {
                 root.add_child(job_node);
             }
             "CronJob" => {
-                let schedule = obj_v.pointer("/spec/schedule").and_then(|x| x.as_str()).unwrap_or("* * * * *");
-                let suspend = obj_v.pointer("/spec/suspend").and_then(|x| x.as_bool()).unwrap_or(false);
+                let schedule = obj_v
+                    .pointer("/spec/schedule")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("* * * * *");
+                let suspend = obj_v
+                    .pointer("/spec/suspend")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
                 let suspend_tag = if suspend { " (SUSPENDED)" } else { "" };
-                let mut cj_node = XrayNode::new(format!("CronJob/{name} schedule='{schedule}'{suspend_tag}"));
+                let mut cj_node =
+                    XrayNode::new(format!("CronJob/{name} schedule='{schedule}'{suspend_tag}"));
 
                 let job_spec = spec_for("job").unwrap();
                 let pods_spec = spec_for("po").unwrap();
@@ -2554,14 +2710,20 @@ impl App {
                     let j_name = j.metadata.name.clone().unwrap_or_default();
                     let j_uid = j.metadata.uid.clone().unwrap_or_default();
                     let j_v = serde_json::to_value(&j).unwrap_or_default();
-                    let succ = j_v.pointer("/status/succeeded").and_then(|x| x.as_i64()).unwrap_or(0);
+                    let succ = j_v
+                        .pointer("/status/succeeded")
+                        .and_then(|x| x.as_i64())
+                        .unwrap_or(0);
                     let mut j_node = XrayNode::new(format!("Job/{j_name} (succeeded={succ})"));
 
                     for po_v in &pos_values {
                         let is_child = po_v
                             .pointer("/metadata/ownerReferences")
                             .and_then(|x| x.as_array())
-                            .map(|arr| arr.iter().any(|o| o.get("uid").and_then(|u| u.as_str()) == Some(&j_uid)))
+                            .map(|arr| {
+                                arr.iter()
+                                    .any(|o| o.get("uid").and_then(|u| u.as_str()) == Some(&j_uid))
+                            })
                             .unwrap_or(false);
                         if is_child {
                             j_node.add_child(format_pod_xray_node(po_v));
@@ -2573,9 +2735,18 @@ impl App {
             }
             "Pod" => {
                 let pod_node = format_pod_xray_node(&obj_v);
-                let qos = obj_v.pointer("/status/qosClass").and_then(|x| x.as_str()).unwrap_or("BestEffort");
-                let node = obj_v.pointer("/spec/nodeName").and_then(|x| x.as_str()).unwrap_or("unscheduled");
-                let sa = obj_v.pointer("/spec/serviceAccountName").and_then(|x| x.as_str()).unwrap_or("default");
+                let qos = obj_v
+                    .pointer("/status/qosClass")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("BestEffort");
+                let node = obj_v
+                    .pointer("/spec/nodeName")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("unscheduled");
+                let sa = obj_v
+                    .pointer("/spec/serviceAccountName")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("default");
                 let mut info_grp = XrayNode::new(format!("Node: {node} | QoS: {qos} | SA: {sa}"));
 
                 if let Some(vols) = obj_v.pointer("/spec/volumes").and_then(|x| x.as_array()) {
@@ -2604,23 +2775,48 @@ impl App {
                 root.add_child(info_grp);
             }
             "Node" => {
-                let os_image = obj_v.pointer("/status/nodeInfo/osImage").and_then(|x| x.as_str()).unwrap_or("Linux");
-                let kubelet = obj_v.pointer("/status/nodeInfo/kubeletVersion").and_then(|x| x.as_str()).unwrap_or("?");
-                let runtime = obj_v.pointer("/status/nodeInfo/containerRuntimeVersion").and_then(|x| x.as_str()).unwrap_or("?");
-                let cpu_cap = obj_v.pointer("/status/capacity/cpu").and_then(|x| x.as_str()).unwrap_or("?");
-                let mem_cap = obj_v.pointer("/status/capacity/memory").and_then(|x| x.as_str()).unwrap_or("?");
+                let os_image = obj_v
+                    .pointer("/status/nodeInfo/osImage")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("Linux");
+                let kubelet = obj_v
+                    .pointer("/status/nodeInfo/kubeletVersion")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("?");
+                let runtime = obj_v
+                    .pointer("/status/nodeInfo/containerRuntimeVersion")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("?");
+                let cpu_cap = obj_v
+                    .pointer("/status/capacity/cpu")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("?");
+                let mem_cap = obj_v
+                    .pointer("/status/capacity/memory")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("?");
 
-                let mut node_grp = XrayNode::new(format!("Node/{name} (Kubelet: {kubelet}, OS: {os_image}, Runtime: {runtime})"));
-                node_grp.add_child(XrayNode::new(format!("Capacity: CPU {cpu_cap} | Memory {mem_cap}")));
+                let mut node_grp = XrayNode::new(format!(
+                    "Node/{name} (Kubelet: {kubelet}, OS: {os_image}, Runtime: {runtime})"
+                ));
+                node_grp.add_child(XrayNode::new(format!(
+                    "Capacity: CPU {cpu_cap} | Memory {mem_cap}"
+                )));
 
                 let pods_spec = spec_for("po").unwrap();
                 let po_api = self.cluster.dyn_api(&pods_spec, None);
                 let lp = kube::api::ListParams::default().fields(&format!("spec.nodeName={name}"));
                 let pos = po_api.list(&lp).await?;
-                let mut pods_grp = XrayNode::new(format!("Scheduled Pods ({total}):", total = pos.items.len()));
+                let mut pods_grp = XrayNode::new(format!(
+                    "Scheduled Pods ({total}):",
+                    total = pos.items.len()
+                ));
                 for po in pos.items {
                     if let Ok(po_v) = serde_json::to_value(&po) {
-                        let ns_name = po_v.pointer("/metadata/namespace").and_then(|x| x.as_str()).unwrap_or("default");
+                        let ns_name = po_v
+                            .pointer("/metadata/namespace")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("default");
                         let mut p_node = format_pod_xray_node(&po_v);
                         p_node.text = format!("[{ns_name}] {}", p_node.text);
                         pods_grp.add_child(p_node);
@@ -2630,7 +2826,10 @@ impl App {
                 root.add_child(node_grp);
             }
             "Namespace" => {
-                let phase = obj_v.pointer("/status/phase").and_then(|x| x.as_str()).unwrap_or("Active");
+                let phase = obj_v
+                    .pointer("/status/phase")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("Active");
                 let mut ns_node = XrayNode::new(format!("Namespace/{name} [{phase}]"));
 
                 let po_spec = spec_for("po").unwrap();
@@ -2641,33 +2840,65 @@ impl App {
                 let dep_api = self.cluster.dyn_api(&dep_spec, Some(name));
                 let svc_api = self.cluster.dyn_api(&svc_spec, Some(name));
 
-                let pos_len = po_api.list(&kube::api::ListParams::default()).await.map(|p| p.items.len()).unwrap_or(0);
-                let deps_len = dep_api.list(&kube::api::ListParams::default()).await.map(|d| d.items.len()).unwrap_or(0);
-                let svcs_len = svc_api.list(&kube::api::ListParams::default()).await.map(|s| s.items.len()).unwrap_or(0);
+                let pos_len = po_api
+                    .list(&kube::api::ListParams::default())
+                    .await
+                    .map(|p| p.items.len())
+                    .unwrap_or(0);
+                let deps_len = dep_api
+                    .list(&kube::api::ListParams::default())
+                    .await
+                    .map(|d| d.items.len())
+                    .unwrap_or(0);
+                let svcs_len = svc_api
+                    .list(&kube::api::ListParams::default())
+                    .await
+                    .map(|s| s.items.len())
+                    .unwrap_or(0);
 
-                ns_node.add_child(XrayNode::new(format!("Summary: {deps_len} Deployments | {svcs_len} Services | {pos_len} Pods")));
+                ns_node.add_child(XrayNode::new(format!(
+                    "Summary: {deps_len} Deployments | {svcs_len} Services | {pos_len} Pods"
+                )));
                 root.add_child(ns_node);
             }
             "ConfigMap" | "Secret" => {
                 let is_secret = spec.kind == "Secret";
                 let pure = self.pure_name(name).to_string();
-                let hits = crate::k8s::used_by(&self.cluster, &pure, is_secret, ns.as_deref()).await.unwrap_or_default();
-                let mut ref_node = XrayNode::new(format!("{}/{} ({total} references)", spec.kind, name, total = hits.len()));
+                let hits = crate::k8s::used_by(&self.cluster, &pure, is_secret, ns.as_deref())
+                    .await
+                    .unwrap_or_default();
+                let mut ref_node = XrayNode::new(format!(
+                    "{}/{} ({total} references)",
+                    spec.kind,
+                    name,
+                    total = hits.len()
+                ));
                 if hits.is_empty() {
-                    ref_node.add_child(XrayNode::new("• No active workload references found in namespace"));
+                    ref_node.add_child(XrayNode::new(
+                        "• No active workload references found in namespace",
+                    ));
                 } else {
                     for h in hits {
-                        ref_node.add_child(XrayNode::new(format!("{:<12} {}/{} via {}", h.kind, h.ns, h.name, h.via)));
+                        ref_node.add_child(XrayNode::new(format!(
+                            "{:<12} {}/{} via {}",
+                            h.kind, h.ns, h.name, h.via
+                        )));
                     }
                 }
                 root.add_child(ref_node);
             }
             other => {
-                root.add_child(XrayNode::new(format!("Resource: {other}/{name} (basic inspection)")));
-                if let Some(labels) = obj_v.pointer("/metadata/labels").and_then(|x| x.as_object()) {
+                root.add_child(XrayNode::new(format!(
+                    "Resource: {other}/{name} (basic inspection)"
+                )));
+                if let Some(labels) = obj_v
+                    .pointer("/metadata/labels")
+                    .and_then(|x| x.as_object())
+                {
                     let mut lbl_grp = XrayNode::new("Labels:");
                     for (k, v) in labels {
-                        lbl_grp.add_child(XrayNode::new(format!("{k}: {}", v.as_str().unwrap_or(""))));
+                        lbl_grp
+                            .add_child(XrayNode::new(format!("{k}: {}", v.as_str().unwrap_or(""))));
                     }
                     root.add_child(lbl_grp);
                 }
