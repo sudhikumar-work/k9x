@@ -11,14 +11,61 @@ permissions:
   packages: write
 
 jobs:
+  build-binaries:
+    name: Build Linux (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            arch: amd64
+          - target: aarch64-unknown-linux-musl
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Cross-compilation Tools
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+            sudo apt-get update && sudo apt-get install -y musl-tools
+          fi
+          cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build Linux target
+        run: |
+          cross build --release --target ${{ matrix.target }}
+          mkdir -p dist/${{ matrix.arch }}
+          cp target/${{ matrix.target }}/release/k9x dist/${{ matrix.arch }}/k9x
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.arch }}
+          path: dist/${{ matrix.arch }}/k9x
+
   docker:
-    name: Build & Push Multi-Arch Container
+    name: Package & Push Multi-Arch Container
+    needs: [build-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Download AMD64 Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-amd64
+          path: dist/amd64
+
+      - name: Download ARM64 Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-arm64
+          path: dist/arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -48,5 +95,4 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+
