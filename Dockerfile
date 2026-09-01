@@ -1,5 +1,5 @@
 # Multi-stage minimal build for k9x
-FROM rust:1.85-alpine AS builder
+FROM rust:alpine AS builder
 
 RUN apk add --no-cache musl-dev gcc make binutils
 
