@@ -41,4 +41,8 @@ tests/**/*.md
 review.md
 *review*.md
 *REVIEW*.md
+learnings.md
+*learnings*.md
+LEARNINGS.md
+*LEARNINGS*.md
 *.log
