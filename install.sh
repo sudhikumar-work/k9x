@@ -221,14 +221,33 @@ fi
 
 success "Successfully installed k9x ${TAG_NAME} to ${DEST_PATH}!"
 
-# Check PATH
+# Check and automatically configure PATH
 case ":$PATH:" in
     *":${INSTALL_DIR}:"*) ;;
     *)
-        warn "${INSTALL_DIR} is not in your PATH."
-        echo -e "Add it to your shell configuration (e.g. ~/.zshrc or ~/.bashrc):"
-        echo -e "  ${BOLD}export PATH=\"${INSTALL_DIR}:\$PATH\"${NC}\n"
+        UPDATED_RC=0
+        for RC in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+            if [ -f "$RC" ]; then
+                if ! grep -qs "${INSTALL_DIR}" "$RC"; then
+                    printf "\n# k9x binary path\nexport PATH=\"%s:\$PATH\"\n" "${INSTALL_DIR}" >> "$RC"
+                    info "Automatically added ${INSTALL_DIR} to PATH in $(basename "$RC")"
+                    UPDATED_RC=1
+                fi
+            fi
+        done
+
+        if [ "$UPDATED_RC" -eq 1 ]; then
+            echo ""
+            info "To use k9x immediately in your current terminal session, run:"
+            echo -e "  ${BOLD}export PATH=\"${INSTALL_DIR}:\$PATH\"${NC}"
+            echo -e "  or open a new terminal window."
+        else
+            warn "${INSTALL_DIR} is not in your PATH."
+            echo -e "Add it to your shell configuration (e.g. ~/.zshrc or ~/.bashrc):"
+            echo -e "  ${BOLD}export PATH=\"${INSTALL_DIR}:\$PATH\"${NC}\n"
+        fi
         ;;
 esac
 
-echo -e "Run ${BOLD}k9x --version${NC} to get started."
+echo -e "\nRun ${BOLD}k9x --version${NC} to get started."
+

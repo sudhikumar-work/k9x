@@ -1,6 +1,6 @@
 [package]
 name = "k9x"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 authors = ["Sudheeshkumar Surendran <sudhikumar-work>"]
 description = "Ultra-fast, event-driven Kubernetes TUI and agent CLI"

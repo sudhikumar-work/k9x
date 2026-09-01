@@ -40,7 +40,7 @@ wget -qO- https://raw.githubusercontent.com/sudhikumar-work/k9x/main/install.sh 
 
 To install a specific version or customize the destination directory:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sudhikumar-work/k9x/main/install.sh | bash -s -- --version v0.2.0 --dir ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/sudhikumar-work/k9x/main/install.sh | bash -s -- --version v0.2.4 --dir ~/.local/bin
 ```
 
 ---
