@@ -310,6 +310,9 @@ pub struct ColDef {
     pub name: String,
     /// JSON path into the object, e.g. "status.podIP" or "spec.nodeName"
     pub path: String,
+    /// optional relative width weight (clamped 1..=100 at apply time)
+    #[serde(default)]
+    pub weight: Option<u16>,
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -319,6 +322,15 @@ pub struct ViewOverride {
     pub replace_columns: bool,
     #[serde(default, alias = "append_columns")]
     pub columns: Vec<ColDef>,
+    /// reorder columns by name (case-insensitive, first unclaimed match).
+    /// Unlisted columns keep their relative order after the listed ones;
+    /// unknown names are ignored (fail-safe).
+    #[serde(default)]
+    pub order: Vec<String>,
+    /// relative width weights per column name (case-insensitive),
+    /// clamped to 1..=100 at apply time to keep percentage math safe
+    #[serde(default)]
+    pub widths: std::collections::BTreeMap<String, u16>,
 }
 
 pub fn views_path() -> PathBuf {
@@ -519,8 +531,13 @@ views:
     append_columns:
       - name: NODE
         path: spec.nodeName
+        weight: 4
       - name: IP
         path: status.podIP
+    order: [NAME, NODE, STATUS, AGE]
+    widths:
+      NAME: 5
+      age: 1
   deploy:
     replace_columns: true
     columns:
@@ -536,9 +553,45 @@ views:
         let po = f.views.get("po").unwrap();
         assert_eq!(po.columns.len(), 2);
         assert_eq!(po.columns[0].path, "spec.nodeName");
+        assert_eq!(po.columns[0].weight, Some(4));
+        assert_eq!(po.columns[1].weight, None);
         assert!(!po.replace_columns);
+        assert_eq!(
+            po.order,
+            vec!["NAME", "NODE", "STATUS", "AGE"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(po.widths.get("NAME"), Some(&5));
+        assert_eq!(po.widths.get("age"), Some(&1));
         let dp = f.views.get("deploy").unwrap();
         assert!(dp.replace_columns);
+        assert!(dp.order.is_empty());
+        assert!(dp.widths.is_empty());
+    }
+
+    #[test]
+    fn views_yml_backward_compatible_minimal() {
+        // legacy files with only columns/replace_columns still parse
+        let y = r#"
+views:
+  svc:
+    columns:
+      - name: EXTIP
+        path: status.loadBalancer.ingress[0].ip
+"#;
+        #[derive(Deserialize)]
+        struct F {
+            #[serde(default)]
+            views: std::collections::BTreeMap<String, ViewOverride>,
+        }
+        let f: F = serde_yaml::from_str(y).unwrap();
+        let svc = f.views.get("svc").unwrap();
+        assert_eq!(svc.columns.len(), 1);
+        assert!(!svc.replace_columns);
+        assert!(svc.order.is_empty());
+        assert!(svc.widths.is_empty());
     }
 }
 

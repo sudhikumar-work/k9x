@@ -733,6 +733,52 @@ impl KindSpec {
             src: ColSrc::Path(path.to_string()),
         }
     }
+
+    /// reorder columns per a views.yml `order` list (case-insensitive,
+    /// first unclaimed match per name). Unlisted columns keep their relative
+    /// order after the listed ones; unknown names are ignored (fail-safe).
+    pub fn reorder_cols(&mut self, order: &[String]) {
+        if order.is_empty() {
+            return;
+        }
+        let mut claimed = vec![false; self.cols.len()];
+        let mut out = Vec::with_capacity(self.cols.len());
+        for want in order {
+            if let Some(i) = self
+                .cols
+                .iter()
+                .enumerate()
+                .position(|(i, c)| !claimed[i] && c.name.eq_ignore_ascii_case(want))
+            {
+                claimed[i] = true;
+                out.push(self.cols[i].clone());
+            }
+        }
+        for (i, c) in self.cols.iter().enumerate() {
+            if !claimed[i] {
+                out.push(c.clone());
+            }
+        }
+        self.cols = out;
+    }
+
+    /// apply relative width weights from a views.yml `widths` map
+    /// (case-insensitive first match), clamped to 1..=100 so that the
+    /// u16 percentage math in ui.rs can never overflow.
+    pub fn apply_widths(&mut self, widths: &std::collections::BTreeMap<String, u16>) {
+        if widths.is_empty() {
+            return;
+        }
+        for (name, w) in widths {
+            if let Some(c) = self
+                .cols
+                .iter_mut()
+                .find(|c| c.name.eq_ignore_ascii_case(name))
+            {
+                c.weight = (*w).clamp(1, 100);
+            }
+        }
+    }
 }
 
 fn hpa_targets(v: &Value) -> String {
@@ -1320,6 +1366,81 @@ mod hv_tests {
         assert_eq!(r.cells.last().unwrap(), "node-a");
         let (cpu, mem) = metric_cols(&spec);
         assert!(cpu.is_some() && mem.is_some());
+    }
+
+    #[test]
+    fn reorder_cols_moves_listed_first_and_keeps_unlisted_relative() {
+        let mut spec = spec_for("po").unwrap();
+        let default_names: Vec<&str> = spec.cols.iter().map(|c| c.name).collect();
+        // move AGE to the front, NAME second; case-insensitive match
+        spec.reorder_cols(&["age".to_string(), "name".to_string()]);
+        assert_eq!(spec.cols[0].name, "AGE");
+        assert_eq!(spec.cols[1].name, "NAME");
+        // remaining columns keep their default relative order
+        let rest: Vec<&str> = spec.cols[2..].iter().map(|c| c.name).collect();
+        let expected_rest: Vec<&str> = default_names
+            .iter()
+            .filter(|n| **n != "AGE" && **n != "NAME")
+            .copied()
+            .collect();
+        assert_eq!(rest, expected_rest);
+    }
+
+    #[test]
+    fn reorder_cols_ignores_unknown_names_and_is_idempotent_safe() {
+        let mut spec = spec_for("po").unwrap();
+        let before: Vec<&str> = spec.cols.iter().map(|c| c.name).collect();
+        spec.reorder_cols(&["DOES_NOT_EXIST".to_string()]);
+        let after: Vec<&str> = spec.cols.iter().map(|c| c.name).collect();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn apply_widths_clamps_to_safe_range() {
+        let mut spec = spec_for("po").unwrap();
+        let mut widths = std::collections::BTreeMap::new();
+        widths.insert("NAME".to_string(), 5_000u16); // must clamp to 100
+        widths.insert("age".to_string(), 0u16); // must clamp to 1
+        spec.apply_widths(&widths);
+        assert_eq!(
+            spec.cols.iter().find(|c| c.name == "NAME").unwrap().weight,
+            100
+        );
+        assert_eq!(
+            spec.cols.iter().find(|c| c.name == "AGE").unwrap().weight,
+            1
+        );
+        // untouched column keeps its default weight
+        let ready_default = spec_for("po").unwrap();
+        assert_eq!(
+            spec.cols.iter().find(|c| c.name == "READY").unwrap().weight,
+            ready_default
+                .cols
+                .iter()
+                .find(|c| c.name == "READY")
+                .unwrap()
+                .weight
+        );
+    }
+
+    #[test]
+    fn view_override_end_to_end_order_and_widths() {
+        // simulate the full apply path: append a custom column, then
+        // reorder and resize via a ViewOverride
+        let mut spec = spec_for("po").unwrap();
+        spec.cols.push(KindSpec::dyn_col("NODE", "spec.nodeName"));
+        let order = ["NODE", "NAME", "AGE"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        spec.reorder_cols(&order);
+        let mut widths = std::collections::BTreeMap::new();
+        widths.insert("NODE".to_string(), 8u16);
+        spec.apply_widths(&widths);
+        assert_eq!(spec.cols[0].name, "NODE");
+        assert_eq!(spec.cols[0].weight, 8);
+        assert_eq!(spec.cols[1].name, "NAME");
+        assert_eq!(spec.cols[2].name, "AGE");
     }
 
     #[test]

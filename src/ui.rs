@@ -909,12 +909,17 @@ fn draw_table(f: &mut Frame, app: &mut App, area: Rect) {
     app.ui_body = Some(area);
     app.ui_header = Some(area);
     app.ui_row_keys = keys_in_order;
-    let total: u16 = spec.cols.iter().map(|c| c.weight).sum::<u16>().max(1);
+    let total: u16 = spec
+        .cols
+        .iter()
+        .map(|c| c.weight)
+        .fold(0u16, u16::saturating_add)
+        .max(1);
     let mut acc = 0u16;
     let mut starts = Vec::with_capacity(spec.cols.len());
     for c in &spec.cols {
         starts.push(acc);
-        acc += ((c.weight * 100) / total).max(4) + 1;
+        acc = acc.saturating_add((((c.weight * 100) / total).max(4)).saturating_add(1));
     }
     app.ui_col_starts = starts;
 }

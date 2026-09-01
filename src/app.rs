@@ -641,7 +641,8 @@ impl App {
         })
     }
 
-    /// apply views.yml column overrides (match by alias, plural, or kind)
+    /// apply views.yml column overrides (match by alias, plural, or kind):
+    /// custom JSON-path columns (append/replace), ordering, and width weights
     pub fn apply_view_override(&self, spec: &mut KindSpec) {
         let key = |s: &str| s.to_lowercase();
         let o = self
@@ -651,14 +652,20 @@ impl App {
                 **k == spec.alias || key(k) == key(&spec.plural) || key(k) == key(&spec.kind)
             })
             .map(|(_, v)| v.clone());
-        if let Some(o) = o {
-            if o.columns.is_empty() {
-                return;
-            }
+        let Some(o) = o else {
+            return;
+        };
+        if !o.columns.is_empty() {
             let extra = o
                 .columns
                 .iter()
-                .map(|cd| KindSpec::dyn_col(&cd.name, &cd.path))
+                .map(|cd| {
+                    let mut col = KindSpec::dyn_col(&cd.name, &cd.path);
+                    if let Some(w) = cd.weight {
+                        col.weight = w.clamp(1, 100);
+                    }
+                    col
+                })
                 .collect::<Vec<_>>();
             if o.replace_columns {
                 spec.cols = extra;
@@ -666,6 +673,8 @@ impl App {
                 spec.cols.extend(extra);
             }
         }
+        spec.reorder_cols(&o.order);
+        spec.apply_widths(&o.widths);
     }
 
     /// toggle the mark on a row; returns true when now marked

@@ -3702,7 +3702,7 @@ fn open_help(app: &mut App) {
         String::new(),
         "STATE & CONFIG (~/.config/k9x/)".to_string(),
         "  config.toml views/theme/tails/metrics   state.toml last ctx + ns per context".to_string(),
-        "  views.yml custom columns per resource (append_columns/replace_columns)".to_string(),
+        "  views.yml custom columns/order/widths per resource (columns/order/widths)".to_string(),
         "  eks-support.json EKS date cache (refetched only after a version upgrade)".to_string(),
         "  plugins.yml hotkeys.yml aliases.yml — k9s-compatible overrides".to_string(),
         String::new(),

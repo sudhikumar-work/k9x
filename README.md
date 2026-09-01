@@ -40,7 +40,7 @@ wget -qO- https://raw.githubusercontent.com/sudhikumar-work/k9x/main/install.sh 
 
 To install a specific version or customize the destination directory:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sudhikumar-work/k9x/main/install.sh | bash -s -- --version v0.2.4 --dir ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/sudhikumar-work/k9x/main/install.sh | bash -s -- --version v0.2.5 --dir ~/.local/bin
 ```
 
 ---
@@ -197,6 +197,32 @@ tick_ms         = 200     # UI render heartbeat in milliseconds
 log_tail        = 5000
 log_cap         = 50000   # in-memory log buffer capacity
 theme           = "dark"  # "dark" | "light" | "mono"
+```
+
+### Custom Columns (`views.yml`)
+
+Customize table columns per resource in `~/.config/k9x/views.yml` — reorder columns,
+add custom JSON-path columns, and adjust relative widths:
+
+```yaml
+views:
+  po:                          # match by alias, plural, or kind (po / pods / Pod)
+    order: [NODE, NAME, STATUS, AGE]   # reorder columns (case-insensitive;
+                                       # unlisted columns keep their relative order)
+    widths:                    # relative width weights (1..=100)
+      NAME: 5
+      age: 1
+    append_columns:            # add custom columns extracted via JSON path
+      - name: NODE
+        path: spec.nodeName
+        weight: 4              # optional width weight for the custom column
+      - name: IP
+        path: status.podIP
+  deploy:
+    replace_columns: true      # replace ALL built-in columns instead of appending
+    columns:
+      - name: NAME
+        path: metadata.name
 ```
 
 ### Plugins
