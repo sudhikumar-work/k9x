@@ -445,7 +445,7 @@ fn hum(secs: i64) -> String {
     }
 }
 
-fn pod_status(v: &Value) -> String {
+pub fn pod_status(v: &Value) -> String {
     let phase = jstr(v, &["status", "phase"]);
     let mut reason = String::new();
     if let Some(cs) = jget(v, &["status", "containerStatuses"]).and_then(|x| x.as_array()) {

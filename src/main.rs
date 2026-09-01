@@ -3412,7 +3412,7 @@ async fn exec_cmd(app: &mut App, cmd: &str) {
             };
         }
         "popeye" => open_popeye(app).await,
-        "xray" => open_xray(app).await,
+        "xray" => open_xray(app, &parts[1..]).await,
         "pf" => app.view = ViewKind::Pf,
         "crds" | "crd" => app.browse_crds().await,
         "help" | "?" => open_help(app),
@@ -4156,20 +4156,81 @@ async fn open_popeye(app: &mut App) {
     }
 }
 
-async fn open_xray(app: &mut App) {
-    let Some(name) = app.selected_or_first() else {
-        app.set_status("!nothing selected");
+async fn open_xray(app: &mut App, args: &[&str]) {
+    let target = if args.is_empty() {
+        let sp_opt = app.view_spec.clone();
+        let name_opt = app.selected_or_first();
+        if let (Some(spec), Some(name)) = (sp_opt, name_opt) {
+            Some((spec, name))
+        } else {
+            None
+        }
+    } else if args.len() == 1 {
+        // e.g. :xray deploy OR :xray web
+        if let Some(sp) = crate::model::spec_for(args[0]) {
+            let is_cur_kind = app.view_spec.as_ref().map(|s| s.kind.as_str()) == Some(&sp.kind);
+            let target_name = if is_cur_kind {
+                app.selected_or_first()
+            } else {
+                None
+            };
+            if let Some(n) = target_name {
+                Some((sp, n))
+            } else {
+                // Fetch first available resource of this kind
+                let ns = if sp.namespaced {
+                    Some(app.ns.as_str())
+                } else {
+                    None
+                };
+                let api = app.cluster.dyn_api(&sp, ns);
+                match api.list(&kube::api::ListParams::default().limit(1)).await {
+                    Ok(list) => {
+                        if let Some(first) = list.items.into_iter().next().and_then(|o| o.metadata.name) {
+                            Some((sp, first))
+                        } else {
+                            app.set_status(format!("!no {} resources found", sp.kind));
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        app.err_status(e);
+                        return;
+                    }
+                }
+            }
+        } else if let Some(sp) = &app.view_spec {
+            Some((sp.clone(), args[0].to_string()))
+        } else {
+            app.set_status(format!("!unknown resource kind '{}'", args[0]));
+            return;
+        }
+    } else {
+        // args.len() >= 2: e.g. :xray deploy web
+        if let Some(sp) = crate::model::spec_for(args[0]) {
+            Some((sp, args[1].to_string()))
+        } else {
+            app.set_status(format!("!unknown resource kind '{}'", args[0]));
+            return;
+        }
+    };
+
+    let Some((spec, name)) = target else {
+        app.set_status("!select a resource or specify kind (e.g. :xray deploy [name])");
         return;
     };
-    // build_xray borrows self; run inline but it is a couple of GETs — acceptable.
-    match app.build_xray(&name).await {
+
+    let pure = app.pure_name(&name).to_string();
+    app.set_status(format!("building xray for {}/{}…", spec.kind, pure));
+    match app.build_xray(&spec, &pure).await {
         Ok(lines) => {
+            app.set_status("");
             app.mode = Mode::TextPane {
-                title: format!("xray:{name}"),
+                title: format!("xray:{}/{}", spec.alias, pure),
                 lines,
                 pos: 0,
                 wrap: false,
-            }
+            };
         }
         Err(e) => app.err_status(e),
     }
@@ -4444,5 +4505,27 @@ mod tests {
         assert_eq!(next_single, 0);
         let prev_single = if 0 == 0 { single_len - 1 } else { 0 - 1 };
         assert_eq!(prev_single, 0);
+    }
+
+    #[test]
+    fn test_xray_node_tree_rendering() {
+        use crate::app::XrayNode;
+        let mut root = XrayNode::new("xray Deployment/web @ demo");
+        let mut dep = XrayNode::new("Deployment/web [2/2 ready]");
+        let mut rs = XrayNode::new("ReplicaSet/web-abc [2/2 ready]");
+        rs.add_child(XrayNode::new("✔ pod/web-abc-1 [1/1] Running"));
+        rs.add_child(XrayNode::new("✔ pod/web-abc-2 [1/1] Running"));
+        dep.add_child(rs);
+        root.add_child(dep);
+
+        let mut lines = Vec::new();
+        root.render(&mut lines, "", true, true);
+
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[0], "xray Deployment/web @ demo");
+        assert_eq!(lines[1], "└── Deployment/web [2/2 ready]");
+        assert_eq!(lines[2], "    └── ReplicaSet/web-abc [2/2 ready]");
+        assert_eq!(lines[3], "        ├── ✔ pod/web-abc-1 [1/1] Running");
+        assert_eq!(lines[4], "        └── ✔ pod/web-abc-2 [1/1] Running");
     }
 }

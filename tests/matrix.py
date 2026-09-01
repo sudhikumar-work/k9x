@@ -478,6 +478,14 @@ def _48():
     return (ok, t[-200:])
 check("48 log-search-nav-n-p", _48)
 
+def _49():
+    # xray hierarchy: ':xray deploy web' renders deployment tree with replicaset and pods
+    t = drive(["po", "-n", "demo"],
+              [(WARM, seq(":xray deploy web\r"))], total=16, full=True)
+    ok = b"xraydeployment/web" in t.lower() and b"replicaset" in t.lower() and b"pod/" in t.lower()
+    return (ok, t[:250])
+check("49 xray-deploy-hierarchy", _49)
+
 print("\n==== SUMMARY ====")
 fails = [n for n, ok, _ in results if not ok]
 print(f"{len(results) - len(fails)}/{len(results)} PASS")
