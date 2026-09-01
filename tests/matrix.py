@@ -468,6 +468,16 @@ def _47():
     return (ok and r.returncode == 1, f"exit={r.returncode} ansi={has_ansi}")
 check("47 non-tty-clean-no-ansi", _47)
 
+def _48():
+    # log search match navigation: ':logs' opens logs, '/' searches, 'n' navigates next match, 'p' navigates prev match
+    t = drive(["po", "-n", "demo"],
+              [(WARM, seq(":logs\r")),
+               (WARM + 3.0, [b"/"]), (WARM + 4.0, seq("a\r")),
+               (WARM + 6.0, [b"n"]), (WARM + 7.5, [b"n"]), (WARM + 9.0, [b"p"])], total=18, full=True)
+    ok = b"match" in t.lower() and b"follow" in t.lower()
+    return (ok, t[-200:])
+check("48 log-search-nav-n-p", _48)
+
 print("\n==== SUMMARY ====")
 fails = [n for n, ok, _ in results if not ok]
 print(f"{len(results) - len(fails)}/{len(results)} PASS")

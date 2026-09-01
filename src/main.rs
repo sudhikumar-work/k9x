@@ -1249,6 +1249,26 @@ async fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                         st.match_total = matches.len();
                         if !matches.is_empty() {
                             st.match_idx = Some(0);
+                            let (target_line_idx, _) = matches[0];
+                            let inner_h = app
+                                .ui_body
+                                .map(|r| r.height.saturating_sub(2) as usize)
+                                .unwrap_or_else(|| {
+                                    crossterm::terminal::size()
+                                        .map(|(_, rows)| (rows.saturating_sub(10) as usize).max(5))
+                                        .unwrap_or(20)
+                                });
+                            let total_filtered = st
+                                .lines
+                                .iter()
+                                .filter(|l| l.to_lowercase().contains(&st.query.to_lowercase()))
+                                .count();
+                            app::ensure_log_line_visible(
+                                &mut st.scroll_from_end,
+                                total_filtered,
+                                target_line_idx,
+                                inner_h,
+                            );
                         } else {
                             st.match_idx = None;
                         }
@@ -1268,8 +1288,28 @@ async fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                                 );
                                 st.match_total = matches.len();
                                 if !matches.is_empty() {
-                                    st.match_idx =
-                                        Some(st.match_idx.unwrap_or(0).min(matches.len() - 1));
+                                    let cur = st.match_idx.unwrap_or(0).min(matches.len() - 1);
+                                    st.match_idx = Some(cur);
+                                    let (target_line_idx, _) = matches[cur];
+                                    let inner_h = app
+                                        .ui_body
+                                        .map(|r| r.height.saturating_sub(2) as usize)
+                                        .unwrap_or_else(|| {
+                                            crossterm::terminal::size()
+                                                .map(|(_, rows)| (rows.saturating_sub(10) as usize).max(5))
+                                                .unwrap_or(20)
+                                        });
+                                    let total_filtered = st
+                                        .lines
+                                        .iter()
+                                        .filter(|l| l.to_lowercase().contains(&st.query.to_lowercase()))
+                                        .count();
+                                    app::ensure_log_line_visible(
+                                        &mut st.scroll_from_end,
+                                        total_filtered,
+                                        target_line_idx,
+                                        inner_h,
+                                    );
                                 } else {
                                     st.match_idx = None;
                                 }
@@ -1288,28 +1328,28 @@ async fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                             st.match_total = matches.len();
                             if !matches.is_empty() {
                                 let cur = st.match_idx.unwrap_or(0);
-                                let next = (cur + 1).min(matches.len() - 1);
+                                let next = (cur + 1) % matches.len();
                                 st.match_idx = Some(next);
                                 let (target_line_idx, _) = matches[next];
                                 let inner_h = app
                                     .ui_body
                                     .map(|r| r.height.saturating_sub(2) as usize)
-                                    .unwrap_or(50);
+                                    .unwrap_or_else(|| {
+                                        crossterm::terminal::size()
+                                            .map(|(_, rows)| (rows.saturating_sub(10) as usize).max(5))
+                                            .unwrap_or(20)
+                                    });
                                 let total_filtered = st
                                     .lines
                                     .iter()
                                     .filter(|l| l.to_lowercase().contains(&st.query.to_lowercase()))
                                     .count();
-                                if target_line_idx < total_filtered.saturating_sub(inner_h) {
-                                    st.scroll_from_end = total_filtered - target_line_idx - inner_h;
-                                } else if target_line_idx
-                                    >= total_filtered.saturating_sub(st.scroll_from_end)
-                                {
-                                    st.scroll_from_end =
-                                        total_filtered.saturating_sub(target_line_idx + 1);
-                                } else {
-                                    st.scroll_from_end = 0;
-                                }
+                                app::ensure_log_line_visible(
+                                    &mut st.scroll_from_end,
+                                    total_filtered,
+                                    target_line_idx,
+                                    inner_h,
+                                );
                             }
                         }
                     }
@@ -1325,28 +1365,32 @@ async fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                             st.match_total = matches.len();
                             if !matches.is_empty() {
                                 let cur = st.match_idx.unwrap_or(0);
-                                let prev = cur.saturating_sub(1);
+                                let prev = if cur == 0 {
+                                    matches.len() - 1
+                                } else {
+                                    cur - 1
+                                };
                                 st.match_idx = Some(prev);
                                 let (target_line_idx, _) = matches[prev];
                                 let inner_h = app
                                     .ui_body
                                     .map(|r| r.height.saturating_sub(2) as usize)
-                                    .unwrap_or(50);
+                                    .unwrap_or_else(|| {
+                                        crossterm::terminal::size()
+                                            .map(|(_, rows)| (rows.saturating_sub(10) as usize).max(5))
+                                            .unwrap_or(20)
+                                    });
                                 let total_filtered = st
                                     .lines
                                     .iter()
                                     .filter(|l| l.to_lowercase().contains(&st.query.to_lowercase()))
                                     .count();
-                                if target_line_idx < total_filtered.saturating_sub(inner_h) {
-                                    st.scroll_from_end = total_filtered - target_line_idx - inner_h;
-                                } else if target_line_idx
-                                    >= total_filtered.saturating_sub(st.scroll_from_end)
-                                {
-                                    st.scroll_from_end =
-                                        total_filtered.saturating_sub(target_line_idx + 1);
-                                } else {
-                                    st.scroll_from_end = 0;
-                                }
+                                app::ensure_log_line_visible(
+                                    &mut st.scroll_from_end,
+                                    total_filtered,
+                                    target_line_idx,
+                                    inner_h,
+                                );
                             }
                         }
                     }
@@ -1405,6 +1449,26 @@ async fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     st.match_total = matches.len();
                     if !matches.is_empty() {
                         st.match_idx = Some(0);
+                        let (target_line_idx, _) = matches[0];
+                        let inner_h = app
+                            .ui_body
+                            .map(|r| r.height.saturating_sub(2) as usize)
+                            .unwrap_or_else(|| {
+                                crossterm::terminal::size()
+                                    .map(|(_, rows)| (rows.saturating_sub(10) as usize).max(5))
+                                    .unwrap_or(20)
+                            });
+                        let total_filtered = st
+                            .lines
+                            .iter()
+                            .filter(|l| l.to_lowercase().contains(&st.query.to_lowercase()))
+                            .count();
+                        app::ensure_log_line_visible(
+                            &mut st.scroll_from_end,
+                            total_filtered,
+                            target_line_idx,
+                            inner_h,
+                        );
                     } else {
                         st.match_idx = None;
                     }
@@ -1424,20 +1488,26 @@ async fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                             st.match_total = matches.len();
                             if !matches.is_empty() {
                                 st.match_idx = Some(0);
+                                let (target_line_idx, _) = matches[0];
                                 let inner_h = app
                                     .ui_body
                                     .map(|r| r.height.saturating_sub(2) as usize)
-                                    .unwrap_or(50);
+                                    .unwrap_or_else(|| {
+                                        crossterm::terminal::size()
+                                            .map(|(_, rows)| (rows.saturating_sub(10) as usize).max(5))
+                                            .unwrap_or(20)
+                                    });
                                 let total_filtered = st
                                     .lines
                                     .iter()
                                     .filter(|l| l.to_lowercase().contains(&st.query.to_lowercase()))
                                     .count();
-                                if total_filtered > inner_h {
-                                    st.scroll_from_end = total_filtered - inner_h;
-                                } else {
-                                    st.scroll_from_end = 0;
-                                }
+                                app::ensure_log_line_visible(
+                                    &mut st.scroll_from_end,
+                                    total_filtered,
+                                    target_line_idx,
+                                    inner_h,
+                                );
                             }
                         }
                     } else if !st.query.is_empty() {
@@ -1447,20 +1517,26 @@ async fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                         st.match_total = matches.len();
                         if !matches.is_empty() {
                             st.match_idx = Some(0);
+                            let (target_line_idx, _) = matches[0];
                             let inner_h = app
                                 .ui_body
                                 .map(|r| r.height.saturating_sub(2) as usize)
-                                .unwrap_or(50);
+                                .unwrap_or_else(|| {
+                                    crossterm::terminal::size()
+                                        .map(|(_, rows)| (rows.saturating_sub(10) as usize).max(5))
+                                        .unwrap_or(20)
+                                });
                             let total_filtered = st
                                 .lines
                                 .iter()
                                 .filter(|l| l.to_lowercase().contains(&st.query.to_lowercase()))
                                 .count();
-                            if total_filtered > inner_h {
-                                st.scroll_from_end = total_filtered - inner_h;
-                            } else {
-                                st.scroll_from_end = 0;
-                            }
+                            app::ensure_log_line_visible(
+                                &mut st.scroll_from_end,
+                                total_filtered,
+                                target_line_idx,
+                                inner_h,
+                            );
                         }
                     }
                 }
@@ -4297,5 +4373,76 @@ mod tests {
         eprintln!("this should be safely discarded to /dev/null");
         restore_tui_stderr();
         restore_tui_stderr();
+    }
+
+    #[test]
+    fn test_ensure_log_line_visible() {
+        let total = 100;
+        let inner_h = 10;
+        let mut scroll = 90; // viewing lines [0..10)
+
+        // 1. Target 5 is already visible [0..10) -> scroll remains unchanged
+        crate::app::ensure_log_line_visible(&mut scroll, total, 5, inner_h);
+        assert_eq!(scroll, 90);
+
+        // 2. Target 25 is below viewport -> scroll adjusted so line 25 is at the bottom (lines [16..26))
+        // end = 26, scroll = 100 - 26 = 74
+        crate::app::ensure_log_line_visible(&mut scroll, total, 25, inner_h);
+        assert_eq!(scroll, 74);
+
+        // 3. Target 4 is above current viewport [16..26) -> scroll adjusted so line 4 is at top (lines [4..14))
+        // start = 4, end = 14, scroll = 100 - 14 = 86
+        crate::app::ensure_log_line_visible(&mut scroll, total, 4, inner_h);
+        assert_eq!(scroll, 86);
+
+        // 4. Target 99 (bottom of logs) -> line 99 at bottom (lines [90..100))
+        // end = 100, scroll = 100 - 100 = 0
+        crate::app::ensure_log_line_visible(&mut scroll, total, 99, inner_h);
+        assert_eq!(scroll, 0);
+
+        // 5. Target 0 from bottom -> line 0 at top (lines [0..10))
+        crate::app::ensure_log_line_visible(&mut scroll, total, 0, inner_h);
+        assert_eq!(scroll, 90);
+
+        // 6. Fewer total lines than viewport height
+        let mut short_scroll = 0;
+        crate::app::ensure_log_line_visible(&mut short_scroll, 5, 3, 10);
+        assert_eq!(short_scroll, 0);
+
+        // 7. Edge cases: 0 lines or 0 height does not panic
+        let mut zero_scroll = 10;
+        crate::app::ensure_log_line_visible(&mut zero_scroll, 0, 0, 10);
+        assert_eq!(zero_scroll, 0);
+
+        let mut zero_h = 10;
+        crate::app::ensure_log_line_visible(&mut zero_h, 100, 5, 0);
+        assert_eq!(zero_h, 0);
+    }
+
+    #[test]
+    fn test_log_search_navigation_wraparound() {
+        let matches_len = 5;
+
+        // Next forward wrap-around: 0 -> 1 -> 2 -> 3 -> 4 -> 0
+        let mut cur = 0;
+        cur = (cur + 1) % matches_len;
+        assert_eq!(cur, 1);
+        cur = 4;
+        cur = (cur + 1) % matches_len;
+        assert_eq!(cur, 0);
+
+        // Prev backward wrap-around: 0 -> 4 -> 3 -> 2 -> 1 -> 0
+        cur = 0;
+        cur = if cur == 0 { matches_len - 1 } else { cur - 1 };
+        assert_eq!(cur, 4);
+        cur = if cur == 0 { matches_len - 1 } else { cur - 1 };
+        assert_eq!(cur, 3);
+
+        // Single match wrap-around
+        let single_len = 1;
+        let next_single = (0 + 1) % single_len;
+        assert_eq!(next_single, 0);
+        let prev_single = if 0 == 0 { single_len - 1 } else { 0 - 1 };
+        assert_eq!(prev_single, 0);
     }
 }

@@ -116,6 +116,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         input_rect = Some(parts[1]);
     }
 
+    app.ui_body = Some(body_chunk);
+
     match (&app.view, &app.mode) {
         (_, Mode::Logs(st)) => draw_logs(f, app, st, body_chunk),
         (_, Mode::LogExport { logs_state, .. }) => draw_logs(f, app, logs_state, body_chunk),

@@ -396,6 +396,38 @@ pub fn compute_log_matches(
     matches
 }
 
+/// Adjusts `scroll_from_end` so `target_line_idx` within `total_lines` is visible
+/// inside a viewport of height `inner_h`.
+///
+/// In k9x, the viewport displays lines `[start .. end)` where:
+/// - `scroll = scroll_from_end.min(total_lines.saturating_sub(1))`
+/// - `end = total_lines.saturating_sub(scroll)`
+/// - `start = end.saturating_sub(inner_h)`
+pub fn ensure_log_line_visible(
+    scroll_from_end: &mut usize,
+    total_lines: usize,
+    target_line_idx: usize,
+    inner_h: usize,
+) {
+    if total_lines == 0 || inner_h == 0 {
+        *scroll_from_end = 0;
+        return;
+    }
+    let inner_h = inner_h.max(1);
+    let scroll = (*scroll_from_end).min(total_lines.saturating_sub(1));
+    let end = total_lines.saturating_sub(scroll);
+    let start = end.saturating_sub(inner_h);
+
+    if target_line_idx < start {
+        // Target is above visible viewport -> scroll up so target is at the top of the visible window
+        *scroll_from_end = total_lines.saturating_sub(target_line_idx + inner_h);
+    } else if target_line_idx >= end {
+        // Target is below visible viewport -> scroll down so target is at the bottom of the visible window
+        *scroll_from_end = total_lines.saturating_sub(target_line_idx + 1);
+    }
+    // If start <= target_line_idx < end, it is already visible; do not jump
+}
+
 pub struct ExecState {
     pub pod: String,
     /// when this exec is a node shell, the ephemeral pod to clean up on detach
