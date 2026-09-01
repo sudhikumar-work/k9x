@@ -13,6 +13,16 @@ on:
 
 permissions:
   contents: write
+permissions:
+  contents: write
+
+# Prevent two release runs (e.g. rapid tag pushes) from racing each other and
+# fighting over the same GitHub Release / Homebrew tap push.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
 
 jobs:
   # -------------------------------------------------------------
@@ -179,13 +189,26 @@ jobs:
           TAP_REPO: "sudhikumar-work/homebrew-tap"
           TAG: ${{ github.ref_name || inputs.tag }}
         run: |
+          set -euo pipefail
           VER="${TAG#v}"
+          is_sha() { printf '%s' "$1" | grep -Eq '^[0-9a-f]{64}$'; }
+
           cd release-assets
+          # Fetch and validate every checksum BEFORE touching the tap — never
+          # publish a formula with placeholder or empty SHA256 values.
           SHA_DARWIN_ARM64=$(grep "k9x-${VER}-darwin-arm64.tar.gz" checksums.txt | awk '{print $1}' || true)
           SHA_DARWIN_AMD64=$(grep "k9x-${VER}-darwin-amd64.tar.gz" checksums.txt | awk '{print $1}' || true)
           SHA_LINUX_ARM64=$(grep "k9x-${VER}-linux-arm64.tar.gz" checksums.txt | awk '{print $1}' || true)
           SHA_LINUX_AMD64=$(grep "k9x-${VER}-linux-amd64.tar.gz" checksums.txt | awk '{print $1}' || true)
           cd ..
+
+          for WHAT in DARWIN_ARM64 DARWIN_AMD64 LINUX_ARM64 LINUX_AMD64; do
+            VAL="$(eval "echo \${SHA_${WHAT}}")"
+            if [ -z "${VAL}" ] || ! is_sha "${VAL}"; then
+              echo "VALIDATION FAILED: invalid sha256 for ${WHAT}: '${VAL}'" >&2
+              exit 1
+            fi
+          done
 
           echo "Darwin ARM64 SHA: ${SHA_DARWIN_ARM64}"
           echo "Darwin AMD64 SHA: ${SHA_DARWIN_AMD64}"
@@ -195,7 +218,7 @@ jobs:
           # Clone tap repo, update Formula/k9x.rb, and commit
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           if git clone "https://x-access-token:${PUBLIC_REPO_TOKEN}@github.com/${TAP_REPO}.git" tap_dir 2>/dev/null; then
             mkdir -p tap_dir/Formula
             sed -e "s/version \".*\"/version \"${VER}\"/" \
@@ -204,12 +227,36 @@ jobs:
                 -e "s/REPLACE_WITH_LINUX_ARM64_SHA256/${SHA_LINUX_ARM64}/" \
                 -e "s/REPLACE_WITH_LINUX_AMD64_SHA256/${SHA_LINUX_AMD64}/" \
                 Formula/k9x.rb > tap_dir/Formula/k9x.rb
-            
+
+            # Reject the generated formula instead of pushing a broken tap update.
+            if grep -qE '^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]])' tap_dir/Formula/k9x.rb; then
+              echo "VALIDATION FAILED: generated formula contains git conflict markers" >&2
+              exit 1
+            fi
+            if grep -q 'REPLACE_WITH_' tap_dir/Formula/k9x.rb; then
+              echo "VALIDATION FAILED: generated formula still contains placeholder tokens" >&2
+              exit 1
+            fi
+            if command -v ruby >/dev/null 2>&1 && ! ruby -c tap_dir/Formula/k9x.rb >/dev/null 2>&1; then
+              echo "VALIDATION FAILED: generated formula is not valid Ruby syntax" >&2
+              exit 1
+            fi
+
             cd tap_dir
             git add Formula/k9x.rb
-            git commit -m "feat(formula): bump k9x to ${TAG}" || true
-            git push origin main || true
-            echo "Successfully updated Homebrew Tap formula!"
+            if git diff --cached --quiet; then
+              echo "Formula already up to date for ${TAG}; nothing to commit."
+            else
+              git commit -m "feat(formula): bump k9x to ${TAG}"
+              # Rebase in case another run pushed to the tap while we were
+              # building; fail loud on divergence instead of silently skipping.
+              git pull --rebase origin main || {
+                echo "VALIDATION FAILED: tap main diverged from local commit; manual intervention required" >&2
+                exit 1
+              }
+              git push origin main
+              echo "Successfully updated Homebrew Tap formula!"
+            fi
           else
             echo "Homebrew tap repository ${TAP_REPO} not found or inaccessible; skipping automatic tap update."
           fi
